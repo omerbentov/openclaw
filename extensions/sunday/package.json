@@ -1,0 +1,33 @@
+{
+  "name": "@openclaw/sunday",
+  "version": "2026.2.18",
+  "description": "OpenClaw Sunday channel plugin",
+  "type": "module",
+  "dependencies": {},
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "channel": {
+      "id": "sunday",
+      "label": "Sunday",
+      "selectionLabel": "Sunday (Agent API)",
+      "docsPath": "/channels/sunday",
+      "docsLabel": "sunday",
+      "blurb": "Sunday messaging platform with Agent API.",
+      "aliases": [
+        "sun"
+      ],
+      "order": 85,
+      "quickstartAllowFrom": true
+    },
+    "install": {
+      "npmSpec": "@openclaw/sunday",
+      "localPath": "extensions/sunday",
+      "defaultChoice": "npm"
+    }
+  }
+}

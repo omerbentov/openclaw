@@ -109,6 +109,11 @@
       - any-glob-to-any-file:
           - "extensions/zalouser/**"
           - "docs/channels/zalouser.md"
+"channel: sunday":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "extensions/sunday/**"
+          - "docs/channels/sunday.md"
 
 "app: android":
   - changed-files:

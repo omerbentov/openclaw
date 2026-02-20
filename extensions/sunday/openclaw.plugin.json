@@ -1,0 +1,9 @@
+{
+  "id": "sunday",
+  "channels": ["sunday"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

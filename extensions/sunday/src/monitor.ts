@@ -1,0 +1,506 @@
+import { createHmac } from "node:crypto";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type { OpenClawConfig } from "openclaw/plugin-sdk";
+import {
+  createReplyPrefixOptions,
+  readJsonBodyWithLimit,
+  registerWebhookTarget,
+  rejectNonPostWebhookRequest,
+  requestBodyErrorToText,
+  resolveSenderCommandAuthorization,
+  resolveWebhookTargets,
+} from "openclaw/plugin-sdk";
+import type { ResolvedSundayAccount } from "./accounts.js";
+import {
+  fetchPendingMessages,
+  markMessagesAsRead,
+  registerWebhook,
+  sendMessage,
+  type SundayCredentials,
+} from "./api.js";
+import { getSundayRuntime } from "./runtime.js";
+import type { SundayPendingMessage, SundayWebhookEvent } from "./types.js";
+
+export type SundayRuntimeEnv = {
+  log?: (message: string) => void;
+  error?: (message: string) => void;
+};
+
+export type SundayMonitorOptions = {
+  account: ResolvedSundayAccount;
+  config: OpenClawConfig;
+  runtime: SundayRuntimeEnv;
+  abortSignal: AbortSignal;
+  webhookUrl?: string;
+  webhookPath?: string;
+  statusSink?: (patch: { lastInboundAt?: number; lastOutboundAt?: number }) => void;
+};
+
+export type SundayMonitorResult = {
+  stop: () => void;
+};
+
+type SundayCoreRuntime = ReturnType<typeof getSundayRuntime>;
+
+type WebhookTarget = {
+  account: ResolvedSundayAccount;
+  config: OpenClawConfig;
+  runtime: SundayRuntimeEnv;
+  core: SundayCoreRuntime;
+  path: string;
+  statusSink?: (patch: { lastInboundAt?: number; lastOutboundAt?: number }) => void;
+};
+
+const webhookTargets = new Map<string, WebhookTarget[]>();
+
+function registerSundayWebhookTarget(target: WebhookTarget): () => void {
+  return registerWebhookTarget(webhookTargets, target).unregister;
+}
+
+function verifySignature(body: string, signature: string, secret: string): boolean {
+  if (!signature || !secret) {
+    return false;
+  }
+  // X-Sunday-Signature: sha256=<hex>
+  const expectedPrefix = "sha256=";
+  if (!signature.startsWith(expectedPrefix)) {
+    return false;
+  }
+  const receivedHash = signature.slice(expectedPrefix.length);
+  const computed = createHmac("sha256", secret).update(body).digest("hex");
+  return computed === receivedHash;
+}
+
+function isSenderAllowed(senderId: string, allowFrom: string[]): boolean {
+  if (allowFrom.includes("*")) {
+    return true;
+  }
+  const normalized = senderId.toLowerCase();
+  return allowFrom.some((entry) => {
+    const clean = entry.toLowerCase().replace(/^(sunday|sun):/i, "");
+    return clean === normalized;
+  });
+}
+
+export async function handleSundayWebhookRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<boolean> {
+  const resolved = resolveWebhookTargets(req, webhookTargets);
+  if (!resolved) {
+    return false;
+  }
+  const { targets } = resolved;
+
+  if (rejectNonPostWebhookRequest(req, res)) {
+    return true;
+  }
+
+  // Read the raw body for signature verification
+  const body = await readJsonBodyWithLimit(req, {
+    maxBytes: 1024 * 1024,
+    timeoutMs: 30_000,
+    emptyObjectOnEmpty: false,
+  });
+  if (!body.ok) {
+    res.statusCode =
+      body.code === "PAYLOAD_TOO_LARGE" ? 413 : body.code === "REQUEST_BODY_TIMEOUT" ? 408 : 400;
+    res.end(
+      body.code === "REQUEST_BODY_TIMEOUT"
+        ? requestBodyErrorToText("REQUEST_BODY_TIMEOUT")
+        : body.error,
+    );
+    return true;
+  }
+
+  const signature = String(req.headers["x-sunday-signature"] ?? "");
+  const bodyString = JSON.stringify(body.value);
+
+  // Match target by valid signature
+  const matching = targets.filter((t) =>
+    verifySignature(bodyString, signature, t.account.apiSecret),
+  );
+
+  if (matching.length === 0) {
+    res.statusCode = 401;
+    res.end("unauthorized");
+    return true;
+  }
+
+  const target = matching[0];
+  const event = body.value as SundayWebhookEvent | null;
+
+  if (!event?.event) {
+    res.statusCode = 400;
+    res.end("invalid payload");
+    return true;
+  }
+
+  target.statusSink?.({ lastInboundAt: Date.now() });
+
+  if (event.event === "message.created") {
+    processInboundMessage(event, target).catch((err) => {
+      target.runtime.error?.(`[${target.account.accountId}] Sunday webhook failed: ${String(err)}`);
+    });
+  }
+  // permission.response, decision.response, agent.* events: acknowledge only (extensible later)
+
+  res.statusCode = 200;
+  res.end("ok");
+  return true;
+}
+
+async function processInboundMessage(
+  event: SundayWebhookEvent,
+  target: WebhookTarget,
+): Promise<void> {
+  const { conversationId, userId } = event;
+  const messageText = typeof event.content === "string" ? event.content : "";
+  const messageId = typeof event.messageId === "string" ? event.messageId : "";
+
+  if (!messageText.trim()) {
+    return;
+  }
+
+  await processMessageWithPipeline({
+    conversationId,
+    userId,
+    messageId,
+    text: messageText,
+    timestamp: event.timestamp,
+    account: target.account,
+    config: target.config,
+    runtime: target.runtime,
+    core: target.core,
+    statusSink: target.statusSink,
+  });
+
+  if (messageId) {
+    const creds: SundayCredentials = {
+      agentId: target.account.agentId,
+      apiKey: target.account.apiKey,
+      apiSecret: target.account.apiSecret,
+      apiBaseUrl: target.account.apiBaseUrl,
+    };
+    try {
+      await markMessagesAsRead(creds, [messageId]);
+    } catch {
+      // Best-effort; don't fail the message pipeline over ack failures.
+    }
+  }
+}
+
+async function processMessageWithPipeline(params: {
+  conversationId: string;
+  userId: string;
+  messageId: string;
+  text: string;
+  timestamp?: string;
+  account: ResolvedSundayAccount;
+  config: OpenClawConfig;
+  runtime: SundayRuntimeEnv;
+  core: SundayCoreRuntime;
+  statusSink?: (patch: { lastInboundAt?: number; lastOutboundAt?: number }) => void;
+}): Promise<void> {
+  const { conversationId, userId, messageId, text, account, config, runtime, core, statusSink } =
+    params;
+  const senderId = userId;
+  const chatId = conversationId;
+  const rawBody = text.trim();
+
+  const dmPolicy = account.config.dmPolicy ?? "pairing";
+  const configAllowFrom = (account.config.allowFrom ?? []).map((v) => String(v));
+  const { senderAllowedForCommands, commandAuthorized } = await resolveSenderCommandAuthorization({
+    cfg: config,
+    rawBody,
+    isGroup: false,
+    dmPolicy,
+    configuredAllowFrom: configAllowFrom,
+    senderId,
+    isSenderAllowed,
+    readAllowFromStore: () => core.channel.pairing.readAllowFromStore("sunday"),
+    shouldComputeCommandAuthorized: (body, cfg) =>
+      core.channel.commands.shouldComputeCommandAuthorized(body, cfg),
+    resolveCommandAuthorizedFromAuthorizers: (authParams) =>
+      core.channel.commands.resolveCommandAuthorizedFromAuthorizers(authParams),
+  });
+
+  if (dmPolicy === "disabled") {
+    return;
+  }
+
+  if (dmPolicy !== "open") {
+    if (!senderAllowedForCommands) {
+      if (dmPolicy === "pairing") {
+        const creds: SundayCredentials = {
+          agentId: account.agentId,
+          apiKey: account.apiKey,
+          apiSecret: account.apiSecret,
+          apiBaseUrl: account.apiBaseUrl,
+        };
+        const { code, created } = await core.channel.pairing.upsertPairingRequest({
+          channel: "sunday",
+          id: senderId,
+          meta: {},
+        });
+
+        if (created) {
+          try {
+            await sendMessage(
+              creds,
+              { userId: senderId, conversationId: chatId },
+              core.channel.pairing.buildPairingReply({
+                channel: "sunday",
+                idLine: `Your Sunday user id: ${senderId}`,
+                code,
+              }),
+            );
+            statusSink?.({ lastOutboundAt: Date.now() });
+          } catch (err) {
+            runtime.error?.(`sunday pairing reply failed for ${senderId}: ${String(err)}`);
+          }
+        }
+      }
+      return;
+    }
+  }
+
+  const route = core.channel.routing.resolveAgentRoute({
+    cfg: config,
+    channel: "sunday",
+    accountId: account.accountId,
+    peer: { kind: "direct", id: chatId },
+  });
+
+  const fromLabel = `user:${senderId}`;
+  const storePath = core.channel.session.resolveStorePath(config.session?.store, {
+    agentId: route.agentId,
+  });
+  const envelopeOptions = core.channel.reply.resolveEnvelopeFormatOptions(config);
+  const previousTimestamp = core.channel.session.readSessionUpdatedAt({
+    storePath,
+    sessionKey: route.sessionKey,
+  });
+  const parsedTimestamp = params.timestamp ? new Date(params.timestamp).getTime() : undefined;
+  const body = core.channel.reply.formatAgentEnvelope({
+    channel: "Sunday",
+    from: fromLabel,
+    timestamp: parsedTimestamp,
+    previousTimestamp,
+    envelope: envelopeOptions,
+    body: rawBody,
+  });
+
+  const ctxPayload = core.channel.reply.finalizeInboundContext({
+    Body: body,
+    BodyForAgent: rawBody,
+    RawBody: rawBody,
+    CommandBody: rawBody,
+    From: `sunday:${senderId}`,
+    To: `sunday:${chatId}`,
+    SessionKey: route.sessionKey,
+    AccountId: route.accountId,
+    ChatType: "direct",
+    ConversationLabel: fromLabel,
+    SenderName: undefined,
+    SenderId: senderId,
+    CommandAuthorized: commandAuthorized,
+    Provider: "sunday",
+    Surface: "sunday",
+    MessageSid: messageId,
+    OriginatingChannel: "sunday",
+    OriginatingTo: `sunday:${chatId}`,
+  });
+
+  await core.channel.session.recordInboundSession({
+    storePath,
+    sessionKey: ctxPayload.SessionKey ?? route.sessionKey,
+    ctx: ctxPayload,
+    onRecordError: (err) => {
+      runtime.error?.(`sunday: failed updating session meta: ${String(err)}`);
+    },
+  });
+
+  const { onModelSelected, ...prefixOptions } = createReplyPrefixOptions({
+    cfg: config,
+    agentId: route.agentId,
+    channel: "sunday",
+    accountId: account.accountId,
+  });
+
+  await core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+    ctx: ctxPayload,
+    cfg: config,
+    dispatcherOptions: {
+      ...prefixOptions,
+      deliver: async (payload) => {
+        await deliverSundayReply({
+          payload,
+          account,
+          userId: senderId,
+          chatId,
+          runtime,
+          core,
+          config,
+          statusSink,
+        });
+      },
+      onError: (err, info) => {
+        runtime.error?.(`[${account.accountId}] Sunday ${info.kind} reply failed: ${String(err)}`);
+      },
+    },
+    replyOptions: { onModelSelected },
+  });
+}
+
+async function deliverSundayReply(params: {
+  payload: { text?: string };
+  account: ResolvedSundayAccount;
+  userId: string;
+  chatId: string;
+  runtime: SundayRuntimeEnv;
+  core: SundayCoreRuntime;
+  config: OpenClawConfig;
+  statusSink?: (patch: { lastInboundAt?: number; lastOutboundAt?: number }) => void;
+}): Promise<void> {
+  const { payload, account, userId, chatId, runtime, config, core, statusSink } = params;
+  const tableMode = core.channel.text.resolveMarkdownTableMode({
+    cfg: config,
+    channel: "sunday",
+    accountId: account.accountId,
+  });
+  const text = core.channel.text.convertMarkdownTables(payload.text ?? "", tableMode);
+
+  if (!text) {
+    return;
+  }
+
+  const creds: SundayCredentials = {
+    agentId: account.agentId,
+    apiKey: account.apiKey,
+    apiSecret: account.apiSecret,
+    apiBaseUrl: account.apiBaseUrl,
+  };
+
+  const chunkMode = core.channel.text.resolveChunkMode(config, "sunday", account.accountId);
+  const chunks = core.channel.text.chunkMarkdownTextWithMode(text, 4000, chunkMode);
+  for (const chunk of chunks) {
+    try {
+      await sendMessage(creds, { userId, conversationId: chatId }, chunk);
+      statusSink?.({ lastOutboundAt: Date.now() });
+    } catch (err) {
+      runtime.error?.(`Sunday message send failed: ${String(err)}`);
+    }
+  }
+}
+
+/**
+ * Initialize the Sunday provider on gateway startup:
+ * 1. Register webhook URL with Sunday platform
+ * 2. Fetch and process pending messages received while offline
+ */
+export async function initSundayProvider(
+  options: SundayMonitorOptions,
+): Promise<SundayMonitorResult> {
+  const { account, config, runtime, abortSignal, webhookUrl, webhookPath, statusSink } = options;
+  const core = getSundayRuntime();
+
+  const creds: SundayCredentials = {
+    agentId: account.agentId,
+    apiKey: account.apiKey,
+    apiSecret: account.apiSecret,
+    apiBaseUrl: account.apiBaseUrl,
+  };
+
+  // Step 1: Register webhook URL with Sunday
+  if (webhookUrl) {
+    try {
+      await registerWebhook(creds, webhookUrl);
+      runtime.log?.(`[${account.accountId}] Sunday webhook registered: ${webhookUrl}`);
+    } catch (err) {
+      runtime.error?.(`[${account.accountId}] Sunday webhook registration failed: ${String(err)}`);
+    }
+  }
+
+  // Step 2: Fetch and process pending messages (best-effort; never fatal)
+  try {
+    const pending = await fetchPendingMessages(creds, 10_000);
+    const messages = pending.messages ?? [];
+    if (messages.length > 0) {
+      runtime.log?.(
+        `[${account.accountId}] Processing ${messages.length} pending Sunday message(s)`,
+      );
+      const processedIds: string[] = [];
+      for (const msg of messages) {
+        try {
+          await processPendingMessage(msg, account, config, runtime, core, statusSink);
+          processedIds.push(msg.id);
+        } catch (msgErr) {
+          runtime.error?.(
+            `[${account.accountId}] Sunday pending message ${msg.id} failed: ${String(msgErr)}`,
+          );
+        }
+      }
+      if (processedIds.length > 0) {
+        try {
+          await markMessagesAsRead(creds, processedIds);
+        } catch (ackErr) {
+          runtime.error?.(
+            `[${account.accountId}] Sunday markMessagesAsRead failed: ${String(ackErr)}`,
+          );
+        }
+      }
+    } else {
+      runtime.log?.(`[${account.accountId}] No pending Sunday messages`);
+    }
+  } catch (err) {
+    runtime.error?.(`[${account.accountId}] Sunday pending messages fetch failed: ${String(err)}`);
+  }
+
+  // Step 3: Register webhook target for ongoing inbound messages
+  const path = webhookPath || "/webhooks/sunday";
+  let stopped = false;
+
+  const unregister = registerSundayWebhookTarget({
+    account,
+    config,
+    runtime,
+    core,
+    path,
+    statusSink,
+  });
+
+  const stop = () => {
+    if (!stopped) {
+      stopped = true;
+      unregister();
+    }
+  };
+
+  abortSignal.addEventListener("abort", stop, { once: true });
+
+  return { stop };
+}
+
+async function processPendingMessage(
+  msg: SundayPendingMessage,
+  account: ResolvedSundayAccount,
+  config: OpenClawConfig,
+  runtime: SundayRuntimeEnv,
+  core: SundayCoreRuntime,
+  statusSink?: (patch: { lastInboundAt?: number; lastOutboundAt?: number }) => void,
+): Promise<void> {
+  statusSink?.({ lastInboundAt: Date.now() });
+  await processMessageWithPipeline({
+    conversationId: msg.conversationId,
+    userId: msg.senderId,
+    messageId: msg.id,
+    text: msg.content,
+    timestamp: msg.timestamp,
+    account,
+    config,
+    runtime,
+    core,
+    statusSink,
+  });
+}

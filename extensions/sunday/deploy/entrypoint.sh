@@ -11,10 +11,10 @@ set -euo pipefail
 #   PORT                 – Cloud Run sets this automatically from the container port setting
 #   OPENCLAW_GATEWAY_TOKEN – gateway auth token (auto-generated if unset)
 
-PORT="${PORT:-8080}"
-MODEL_BASE_URL="${MODEL_BASE_URL:-https://api.deepseek.com/v1}"
-MODEL_ID="${MODEL_ID:-deepseek-chat}"
-SUNDAY_API_BASE_URL="${SUNDAY_API_BASE_URL:-https://sunday-backend-612819501028.us-central1.run.app}"
+export PORT="${PORT:-8080}"
+export MODEL_BASE_URL="${MODEL_BASE_URL:-https://api.deepseek.com/v1}"
+export MODEL_ID="${MODEL_ID:-deepseek-chat}"
+export SUNDAY_API_BASE_URL="${SUNDAY_API_BASE_URL:-https://sunday-backend-612819501028.us-central1.run.app}"
 
 if [ -z "${MODEL_API_KEY:-}" ]; then
   echo "ERROR: MODEL_API_KEY env var is required" >&2
@@ -35,54 +35,56 @@ if [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
   export OPENCLAW_GATEWAY_TOKEN
 fi
 
-WEBHOOK_URL="${SERVICE_URL:+${SERVICE_URL}/webhooks/sunday}"
-
-CONFIG_DIR="${HOME}/.openclaw"
+export CONFIG_DIR="${HOME}/.openclaw"
 mkdir -p "${CONFIG_DIR}/workspace"
 
-cat > "${CONFIG_DIR}/openclaw.json" <<CONFIGEOF
-{
-  "agents": {
-    "defaults": {
-      "model": { "primary": "deepseek/${MODEL_ID}" },
-      "workspace": "${CONFIG_DIR}/workspace",
-      "blockStreamingDefault": "off"
-    }
+node -e '
+const s = (v) => v?.trim() || "";
+const sunday = {
+  enabled: true,
+  agentId: s(process.env.SUNDAY_AGENT_ID),
+  apiKey: s(process.env.SUNDAY_API_KEY),
+  apiSecret: s(process.env.SUNDAY_API_SECRET),
+  dmPolicy: "open",
+  allowFrom: ["*"],
+  apiBaseUrl: s(process.env.SUNDAY_API_BASE_URL),
+};
+const serviceUrl = s(process.env.SERVICE_URL);
+if (serviceUrl) sunday.webhookUrl = serviceUrl + "/webhooks/sunday";
+const modelId = s(process.env.MODEL_ID) || "deepseek-chat";
+const config = {
+  agents: {
+    defaults: {
+      model: { primary: "deepseek/" + modelId },
+      workspace: process.env.CONFIG_DIR + "/workspace",
+      blockStreamingDefault: "off",
+    },
   },
-  "commands": { "native": "auto", "nativeSkills": "auto" },
-  "channels": {
-    "sunday": {
-      "enabled": true,
-      "agentId": "${SUNDAY_AGENT_ID}",
-      "apiKey": "${SUNDAY_API_KEY}",
-      "apiSecret": "${SUNDAY_API_SECRET}",
-      "dmPolicy": "open",
-      "allowFrom": ["*"],
-      "apiBaseUrl": "${SUNDAY_API_BASE_URL}"${WEBHOOK_URL:+,
-      "webhookUrl": "${WEBHOOK_URL}"}
-    }
+  commands: { native: "auto", nativeSkills: "auto" },
+  channels: { sunday },
+  gateway: { mode: "local" },
+  plugins: { entries: { sunday: { enabled: true } } },
+  models: {
+    providers: {
+      deepseek: {
+        baseUrl: s(process.env.MODEL_BASE_URL) || "https://api.deepseek.com/v1",
+        apiKey: s(process.env.MODEL_API_KEY),
+        api: "openai-completions",
+        models: [{
+          id: modelId,
+          name: "DeepSeek Chat",
+          contextWindow: 128000,
+          maxTokens: 8192,
+        }],
+      },
+    },
   },
-  "gateway": { "mode": "local" },
-  "plugins": { "entries": { "sunday": { "enabled": true } } },
-  "models": {
-    "providers": {
-      "deepseek": {
-        "baseUrl": "${MODEL_BASE_URL}",
-        "apiKey": "${MODEL_API_KEY}",
-        "api": "openai-completions",
-        "models": [
-          {
-            "id": "${MODEL_ID}",
-            "name": "DeepSeek Chat",
-            "contextWindow": 128000,
-            "maxTokens": 8192
-          }
-        ]
-      }
-    }
-  }
-}
-CONFIGEOF
+};
+require("fs").writeFileSync(
+  process.env.CONFIG_DIR + "/openclaw.json",
+  JSON.stringify(config, null, 2) + "\n",
+);
+'
 
 echo "Config written to ${CONFIG_DIR}/openclaw.json"
 

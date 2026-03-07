@@ -1,6 +1,6 @@
 # Sunday Agent API Documentation
 
-Base URL: `https://<your-domain>`
+Base URL: `https://sunday-backend-612819501028.us-central1.run.app`
 
 All responses are JSON with `Content-Type: application/json`.
 
@@ -8,10 +8,11 @@ All responses are JSON with `Content-Type: application/json`.
 
 ## Authentication
 
-Used for agent-facing endpoints. Pass the API key received from `POST /createAgent`:
+All agent-facing endpoints require the API key received during provisioning:
 
 ```
 Authorization: Bearer <api_key>
+Content-Type: application/json
 ```
 
 The API key is a 64-character hex string. It is SHA256-hashed server-side and matched against Firestore. The agent must also have `isActive: true`.
@@ -43,15 +44,200 @@ HTTP Status: `400`, `401`, `403`, `404`, or `500`
 
 ---
 
-## Agent API
+## Endpoints
 
-### 1. Update Agent Webhook
+### 1. Send Message
+
+```
+POST /sendMessage
+```
+
+Send any message type to a user. The `type` field controls rendering.
+
+**Request Body:**
+
+```json
+{
+  "userId": "string (required)",
+  "message": "string (required)",
+  "conversationId": "string (optional - auto-resolved if omitted)",
+  "type": "string (default: \"text\")",
+  "metadata": {}
+}
+```
+
+If `conversationId` is omitted, the server looks up an existing conversation between the agent and user, or creates a new one.
+
+See [Supported Message Types](#supported-message-types) for all `type` values and their `metadata` schemas.
+
+**Success Response:**
+
+```json
+{
+  "success": true,
+  "messageId": "string",
+  "conversationId": "string"
+}
+```
+
+**Error Responses:**
+
+| Status | Error                               |
+| ------ | ----------------------------------- |
+| 400    | `Invalid request body`              |
+| 400    | `Message content is required`       |
+| 404    | `Agent not found`                   |
+| 403    | `Agent not installed for this user` |
+| 500    | `Failed to send message`            |
+
+---
+
+### 2. Request Permission
+
+```
+POST /requestPermission
+```
+
+Request user approval for an action. Creates a `permission_request` message in the conversation with approve/deny buttons.
+
+**Request Body:**
+
+```json
+{
+  "userId": "string (required)",
+  "conversationId": "string (required)",
+  "action": "string (required)",
+  "reason": "string (required)"
+}
+```
+
+**Success Response:**
+
+```json
+{
+  "success": true,
+  "permissionId": "string",
+  "messageId": "string"
+}
+```
+
+**Error Responses:**
+
+| Status | Error                                 |
+| ------ | ------------------------------------- |
+| 400    | `Invalid request body`                |
+| 400    | `Missing required fields`             |
+| 500    | `Failed to create permission request` |
+
+---
+
+### 3. Check Permission
+
+```
+GET /checkPermission
+```
+
+**Query Parameters:**
+
+| Param          | Type   | Description                  |
+| -------------- | ------ | ---------------------------- |
+| `permissionId` | string | The permission ID (required) |
+
+**Success Response:**
+
+```json
+{
+  "permissionId": "string",
+  "status": "pending | approved | denied",
+  "respondedAt": "2025-01-01T00:00:00Z"
+}
+```
+
+`respondedAt` is `null` while status is `pending`.
+
+**Error Responses:**
+
+| Status | Error                      |
+| ------ | -------------------------- |
+| 400    | `permissionId is required` |
+| 404    | `Permission not found`     |
+| 403    | `Unauthorized`             |
+
+---
+
+### 4. Update Task Status
+
+```
+POST /updateTaskStatus
+```
+
+Send a progress update message.
+
+**Request Body:**
+
+```json
+{
+  "userId": "string (required)",
+  "conversationId": "string (required)",
+  "taskName": "string (required)",
+  "status": "string (required)",
+  "progress": 0
+}
+```
+
+`progress` is an integer (0-100 percent).
+
+**Success Response:**
+
+```json
+{
+  "success": true,
+  "messageId": "string"
+}
+```
+
+**Error Responses:**
+
+| Status | Error                          |
+| ------ | ------------------------------ |
+| 400    | `Invalid request body`         |
+| 500    | `Failed to create task update` |
+
+---
+
+### 5. Update Todo List
+
+```
+POST /updateTodoList
+```
+
+Update an existing `todo_list` message in-place.
+
+**Request Body:**
+
+```json
+{
+  "messageId": "string (required)",
+  "items": [
+    {
+      "id": "string",
+      "title": "string",
+      "status": "pending | in_progress | completed"
+    }
+  ],
+  "status": "string (optional)"
+}
+```
+
+---
+
+### 6. Update Agent Webhook
 
 ```
 POST /updateAgentWebhook
 ```
 
-**Auth:** API Key
+Register or update the webhook URL. Called automatically by the OpenClaw gateway on startup when `SERVICE_URL` is configured.
 
 **Request Body:**
 
@@ -82,69 +268,82 @@ POST /updateAgentWebhook
 
 ---
 
-### 2. Send Message
+### 7. Get Pending Messages
 
 ```
-POST /sendMessage
+GET /getPendingMessages
 ```
 
-**Auth:** API Key
-
-**Request Body:**
-
-```json
-{
-  "userId": "string (required)",
-  "message": "string (required)",
-  "conversationId": "string (optional - auto-resolved if omitted)",
-  "type": "string (default: \"text\")",
-  "metadata": {}
-}
-```
-
-If `conversationId` is omitted, the server looks up an existing conversation between the agent and user, or creates a new one.
+Returns all unread user messages across all conversations where `waitingForReply` is `true`. Used on startup to catch messages sent while the agent was offline.
 
 **Success Response:**
 
 ```json
 {
   "success": true,
-  "messageId": "string",
-  "conversationId": "string"
+  "messages": [
+    {
+      "id": "string",
+      "conversationId": "string",
+      "content": "string",
+      "senderId": "string",
+      "isAgent": false,
+      "type": "text",
+      "metadata": {},
+      "read": false,
+      "timestamp": "2025-01-01T00:00:00Z"
+    }
+  ]
 }
 ```
 
 **Error Responses:**
 
-| Status | Error                               |
-| ------ | ----------------------------------- |
-| 400    | `Invalid request body`              |
-| 400    | `Message content is required`       |
-| 404    | `Agent not found`                   |
-| 403    | `Agent not installed for this user` |
-| 500    | `Failed to send message`            |
+| Status | Error                         |
+| ------ | ----------------------------- |
+| 500    | `Failed to get conversations` |
 
 ---
 
-### 3. Send Message V2
+### 8. Mark Messages as Read by Agent
 
 ```
-POST /sendMessageV2
+POST /markMessagesAsReadByAgent
 ```
 
-**Auth:** API Key
+Acknowledge messages so they no longer appear in `getPendingMessages`.
 
-Same request/response as [2. Send Message](#2-send-message). Currently uses the same handler internally.
+**Request Body:**
+
+```json
+{
+  "messageIds": ["string", "string"]
+}
+```
+
+**Success Response:**
+
+```json
+{
+  "success": true,
+  "markedCount": 2
+}
+```
+
+**Error Responses:**
+
+| Status | Error                     |
+| ------ | ------------------------- |
+| 400    | `Invalid request body`    |
+| 400    | `No message IDs provided` |
 
 ---
 
-### 4. Get Messages
+### 9. Get Messages
 
 ```
 GET /getMessages
 ```
-
-**Auth:** API Key
 
 **Query Parameters:**
 
@@ -187,215 +386,106 @@ Messages are returned in ascending timestamp order.
 
 ---
 
-### 5. Get Pending Messages
+### 10. Set Context
 
 ```
-GET /getPendingMessages
+POST /setContext
 ```
 
-**Auth:** API Key
-
-Returns all unread user messages across all conversations where `waitingForReply` is `true`.
-
-**Success Response:**
-
-```json
-{
-  "success": true,
-  "messages": [
-    {
-      "id": "string",
-      "conversationId": "string",
-      "content": "string",
-      "senderId": "string",
-      "isAgent": false,
-      "type": "text",
-      "metadata": {},
-      "read": false,
-      "timestamp": "2025-01-01T00:00:00Z"
-    }
-  ]
-}
-```
-
-**Error Responses:**
-
-| Status | Error                         |
-| ------ | ----------------------------- |
-| 500    | `Failed to get conversations` |
-
----
-
-### 6. Mark Messages as Read by Agent
-
-```
-POST /markMessagesAsReadByAgent
-```
-
-**Auth:** API Key
+Store a key-value pair scoped to a conversation. Useful for persisting agent state.
 
 **Request Body:**
 
 ```json
 {
-  "messageIds": ["string", "string"]
-}
-```
-
-**Success Response:**
-
-```json
-{
-  "success": true,
-  "markedCount": 2
-}
-```
-
-**Error Responses:**
-
-| Status | Error                     |
-| ------ | ------------------------- |
-| 400    | `Invalid request body`    |
-| 400    | `No message IDs provided` |
-
----
-
-### 7. Request Permission
-
-```
-POST /requestPermission
-```
-
-**Auth:** API Key
-
-**Request Body:**
-
-```json
-{
-  "userId": "string",
   "conversationId": "string (required)",
-  "action": "string (required)",
-  "reason": "string (required)"
+  "key": "string (required)",
+  "value": "string (required)"
 }
 ```
-
-Creates a permission request and sends a `permission_request` type message in the conversation.
-
-**Success Response:**
-
-```json
-{
-  "success": true,
-  "permissionId": "string",
-  "messageId": "string"
-}
-```
-
-**Error Responses:**
-
-| Status | Error                                 |
-| ------ | ------------------------------------- |
-| 400    | `Invalid request body`                |
-| 400    | `Missing required fields`             |
-| 500    | `Failed to create permission request` |
 
 ---
 
-### 8. Check Permission
+### 11. Get Context
 
 ```
-GET /checkPermission
+GET /getContext
 ```
-
-**Auth:** API Key
 
 **Query Parameters:**
 
-| Param          | Type   | Description                  |
-| -------------- | ------ | ---------------------------- |
-| `permissionId` | string | The permission ID (required) |
-
-**Success Response:**
-
-```json
-{
-  "permissionId": "string",
-  "status": "pending | approved | denied",
-  "respondedAt": "2025-01-01T00:00:00Z"
-}
-```
-
-`respondedAt` is `null` while status is `pending`.
-
-**Error Responses:**
-
-| Status | Error                      |
-| ------ | -------------------------- |
-| 400    | `permissionId is required` |
-| 404    | `Permission not found`     |
-| 403    | `Unauthorized`             |
+| Param            | Type   | Description                    |
+| ---------------- | ------ | ------------------------------ |
+| `conversationId` | string | The conversation ID (required) |
+| `key`            | string | The context key (required)     |
 
 ---
 
-### 9. Update Task Status
+### 12. Delete Context
 
 ```
-POST /updateTaskStatus
+DELETE /deleteContext
 ```
 
-**Auth:** API Key
+**Query Parameters:**
 
-**Request Body:**
+| Param            | Type   | Description                    |
+| ---------------- | ------ | ------------------------------ |
+| `conversationId` | string | The conversation ID (required) |
+| `key`            | string | The context key (required)     |
 
-```json
-{
-  "userId": "string",
-  "conversationId": "string",
-  "taskName": "string",
-  "status": "string",
-  "progress": 0
-}
+---
+
+### 13. List Context Keys
+
+```
+GET /listContextKeys
 ```
 
-`progress` is an integer (e.g., 0-100 percent).
+**Query Parameters:**
 
-**Success Response:**
+| Param            | Type   | Description                    |
+| ---------------- | ------ | ------------------------------ |
+| `conversationId` | string | The conversation ID (required) |
 
-```json
-{
-  "success": true,
-  "messageId": "string"
-}
-```
+---
 
-**Error Responses:**
+## Supported Message Types
 
-| Status | Error                          |
-| ------ | ------------------------------ |
-| 400    | `Invalid request body`         |
-| 500    | `Failed to create task update` |
+All message types are sent via `POST /sendMessage` using the `type` field. The `metadata` object controls type-specific rendering.
+
+| #   | Type                 | Description                     | Metadata                                                                               |
+| --- | -------------------- | ------------------------------- | -------------------------------------------------------------------------------------- |
+| 1   | `text`               | Plain text message              | None required                                                                          |
+| 2   | `info`               | Informational message with icon | None required                                                                          |
+| 3   | `progress`           | Progress bar                    | `{ taskName, status, progress (0-100), currentStep, totalSteps }`                      |
+| 4   | `task_update`        | Same as progress (legacy alias) | Same as `progress`                                                                     |
+| 5   | `decision`           | Interactive buttons             | `{ question, options: ["A", "B"], status: "pending" }`                                 |
+| 6   | `permission_request` | Approve/deny prompt             | Created via `POST /requestPermission`, not `/sendMessage`                              |
+| 7   | `ui_approval`        | Approve/deny card with image    | `{ action, description, imageUrl, status: "pending" }`                                 |
+| 8   | `resource_access`    | Grant/deny resource access      | `{ resource, resourceType, resourceName, permissions: [], reason, status: "pending" }` |
+| 9   | `todo_list`          | Checklist with progress         | `{ title, items: [{ id, title, status }], progress (0-100), status }`                  |
+| 10  | `markdown`           | Rich markdown content           | `{ title, buildable: bool, buildAction: "string" }`                                    |
+| 11  | `html`               | Custom HTML rendering           | `{ title, htmlContent: "<div>...</div>" }`                                             |
+| 12  | `chart`              | Data visualization              | `{ title, chartType: "bar"\|"pie"\|"line", data: [{ label, value }] }`                 |
+| 13  | `image`              | Image display                   | `{ imageUrl, caption }`                                                                |
+| 14  | `code`               | Code block                      | `{ language, filename, code }`                                                         |
 
 ---
 
 ## Webhook Events
 
-When certain actions occur, the system queues webhook events that are delivered to the agent's `webhookUrl`.
+When certain actions occur, the system delivers webhook events to the agent's registered `webhookUrl`.
+
+### Webhook Security
+
+Verify the `X-Sunday-Signature` header using HMAC-SHA256 with your webhook secret on the raw request body:
+
+```
+X-Sunday-Signature: sha256=<hex>
+```
 
 ### Event Types
-
-#### `agent.installed`
-
-Fired when a user installs the agent.
-
-```json
-{
-  "userId": "string",
-  "conversationId": "string",
-  "installationId": "string",
-  "scopes": ["string"],
-  "installedAt": "2025-01-01T00:00:00Z"
-}
-```
 
 #### `message.created`
 
@@ -403,6 +493,7 @@ Fired when a user sends a message to the agent.
 
 ```json
 {
+  "event": "message.created",
   "messageId": "string",
   "conversationId": "string",
   "userId": "string",
@@ -412,12 +503,43 @@ Fired when a user sends a message to the agent.
 }
 ```
 
+#### `agent.installed`
+
+Fired when a user installs the agent.
+
+```json
+{
+  "event": "agent.installed",
+  "userId": "string",
+  "conversationId": "string",
+  "installationId": "string",
+  "isReinstall": false,
+  "scopes": ["string"],
+  "installedAt": "2025-01-01T00:00:00Z"
+}
+```
+
+#### `agent.uninstalled`
+
+Fired when a user uninstalls the agent.
+
+```json
+{
+  "event": "agent.uninstalled",
+  "userId": "string",
+  "conversationId": "string",
+  "installationId": "string",
+  "reason": "string"
+}
+```
+
 #### `permission.response`
 
 Fired when a user responds to a permission request.
 
 ```json
 {
+  "event": "permission.response",
   "permissionId": "string",
   "conversationId": "string",
   "userId": "string",
@@ -430,10 +552,11 @@ Fired when a user responds to a permission request.
 
 #### `decision.response`
 
-Fired when a user responds to a decision prompt.
+Fired when a user selects an option from a decision message.
 
 ```json
 {
+  "event": "decision.response",
   "messageId": "string",
   "conversationId": "string",
   "userId": "string",
@@ -445,17 +568,27 @@ Fired when a user responds to a decision prompt.
 
 ---
 
-## Message Types
+## Agent Startup Flow
 
-Messages have a `type` field that determines how they are rendered. Known types:
+1. `POST /updateAgentWebhook` — register the webhook URL
+2. `GET /getPendingMessages` — catch messages sent while offline
+3. Process each pending message and reply
+4. `POST /markMessagesAsReadByAgent` — acknowledge processed messages
+5. Start listening for webhook events
 
-| Type                 | Description                                     |
-| -------------------- | ----------------------------------------------- |
-| `text`               | Plain text message (default)                    |
-| `permission_request` | Permission request with approve/deny buttons    |
-| `task_update`        | Task progress update with status and progress % |
+When deployed via Cloud Run with the `SERVICE_URL` env var, the OpenClaw gateway handles steps 1-4 automatically on boot.
 
-Custom types can be used via the `metadata` field for rich message formats.
+---
+
+## Best Practices
+
+- Respond to webhooks with HTTP 200 within 10 seconds.
+- For long tasks, acknowledge immediately and process async.
+- Use `progress` / `todo_list` message types to show work in progress.
+- Implement webhook deduplication (same `messageId` can arrive twice).
+- Store agent state using `/setContext` and `/getContext`.
+- Always verify webhook signatures via `X-Sunday-Signature`.
+- Send a welcome message on `agent.installed`.
 
 ---
 

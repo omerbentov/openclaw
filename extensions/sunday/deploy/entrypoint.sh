@@ -1,28 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Env vars injected by Cloud Run at deploy time:
-#   SUNDAY_AGENT_ID, SUNDAY_API_KEY, SUNDAY_API_SECRET  – read by credentials.ts
-#   SUNDAY_API_BASE_URL  – Sunday backend URL (read by accounts.ts)
-#   SERVICE_URL          – public Cloud Run URL (auto-detected from metadata server if not set)
-#   MODEL_API_KEY        – AI model provider API key
+# Required env vars:
+#   SUNDAY_AGENT_ID      – Sunday agent ID
+#   SUNDAY_API_KEY       – Sunday API key
+#   SUNDAY_WEBHOOK_SECRET – webhook HMAC signing secret
+#   MODEL_API_KEY        – AI model provider API key (DeepSeek)
+#
+# Optional env vars:
+#   SERVICE_URL          – public URL (auto-detected on Cloud Run if not set)
+#   SUNDAY_API_BASE_URL  – override Sunday backend URL
 #   MODEL_BASE_URL       – model API endpoint (default: https://api.deepseek.com/v1)
 #   MODEL_ID             – model identifier  (default: deepseek-chat)
-#   PORT                 – Cloud Run sets this automatically from the container port setting
+#   PORT                 – listen port (default: 8080; Cloud Run sets this automatically)
 #   OPENCLAW_GATEWAY_TOKEN – gateway auth token (auto-generated if unset)
 
 export PORT="${PORT:-8080}"
 export MODEL_BASE_URL="${MODEL_BASE_URL:-https://api.deepseek.com/v1}"
 export MODEL_ID="${MODEL_ID:-deepseek-chat}"
-export SUNDAY_API_BASE_URL="${SUNDAY_API_BASE_URL:-https://sunday-backend-612819501028.us-central1.run.app}"
 
 if [ -z "${MODEL_API_KEY:-}" ]; then
   echo "ERROR: MODEL_API_KEY env var is required" >&2
   exit 1
 fi
 
-if [ -z "${SUNDAY_AGENT_ID:-}" ] || [ -z "${SUNDAY_API_KEY:-}" ] || [ -z "${SUNDAY_API_SECRET:-}" ]; then
-  echo "ERROR: SUNDAY_AGENT_ID, SUNDAY_API_KEY, and SUNDAY_API_SECRET env vars are required" >&2
+if [ -z "${SUNDAY_AGENT_ID:-}" ] || [ -z "${SUNDAY_API_KEY:-}" ] || [ -z "${SUNDAY_WEBHOOK_SECRET:-}" ]; then
+  echo "ERROR: SUNDAY_AGENT_ID, SUNDAY_API_KEY, and SUNDAY_WEBHOOK_SECRET env vars are required" >&2
   exit 1
 fi
 
@@ -59,40 +62,76 @@ const sunday = {
   enabled: true,
   agentId: s(process.env.SUNDAY_AGENT_ID),
   apiKey: s(process.env.SUNDAY_API_KEY),
-  apiSecret: s(process.env.SUNDAY_API_SECRET),
+  webhookSecret: s(process.env.SUNDAY_WEBHOOK_SECRET),
   dmPolicy: "open",
-  allowFrom: ["*"],
-  apiBaseUrl: s(process.env.SUNDAY_API_BASE_URL),
 };
+const apiBaseUrl = s(process.env.SUNDAY_API_BASE_URL);
+if (apiBaseUrl) sunday.apiBaseUrl = apiBaseUrl;
 const serviceUrl = s(process.env.SERVICE_URL);
 if (serviceUrl) sunday.webhookUrl = serviceUrl + "/webhooks/sunday";
 const modelId = s(process.env.MODEL_ID) || "deepseek-chat";
+const gatewayToken = s(process.env.OPENCLAW_GATEWAY_TOKEN);
 const config = {
-  agents: {
-    defaults: {
-      model: { primary: "deepseek/" + modelId },
-      workspace: process.env.CONFIG_DIR + "/workspace",
-      blockStreamingDefault: "off",
-    },
-  },
-  commands: { native: "auto", nativeSkills: "auto" },
-  channels: { sunday },
-  gateway: { mode: "local" },
-  plugins: { entries: { sunday: { enabled: true } } },
   models: {
     providers: {
       deepseek: {
         baseUrl: s(process.env.MODEL_BASE_URL) || "https://api.deepseek.com/v1",
-        apiKey: s(process.env.MODEL_API_KEY),
         api: "openai-completions",
-        models: [{
-          id: modelId,
-          name: "DeepSeek Chat",
-          contextWindow: 128000,
-          maxTokens: 8192,
-        }],
+        apiKey: s(process.env.MODEL_API_KEY),
+        models: [
+          {
+            id: "deepseek-chat",
+            name: "DeepSeek Chat (V3)",
+            input: ["text"],
+            cost: { input: 0.27, output: 1.1, cacheRead: 0.07, cacheWrite: 0.27 },
+            contextWindow: 65536,
+            maxTokens: 8192,
+          },
+          {
+            id: "deepseek-reasoner",
+            name: "DeepSeek Reasoner (R1)",
+            reasoning: true,
+            input: ["text"],
+            cost: { input: 0.55, output: 2.19, cacheRead: 0.14, cacheWrite: 0.55 },
+            contextWindow: 65536,
+            maxTokens: 8192,
+          },
+        ],
       },
     },
+  },
+  agents: {
+    defaults: {
+      model: { primary: "deepseek/" + modelId },
+      workspace: process.env.CONFIG_DIR + "/workspace",
+      compaction: { mode: "safeguard" },
+      maxConcurrent: 4,
+      subagents: { maxConcurrent: 8 },
+    },
+  },
+  messages: { ackReactionScope: "group-mentions" },
+  commands: { native: "auto", nativeSkills: "auto" },
+  channels: { sunday },
+  gateway: {
+    port: parseInt(process.env.PORT, 10) || 8080,
+    mode: "local",
+    bind: "lan",
+    auth: { mode: "token", token: gatewayToken },
+    tailscale: { mode: "off", resetOnExit: false },
+    nodes: {
+      denyCommands: [
+        "camera.snap",
+        "camera.clip",
+        "screen.record",
+        "calendar.add",
+        "contacts.add",
+        "reminders.add",
+      ],
+    },
+  },
+  plugins: {
+    load: { paths: ["/app/extensions/sunday"] },
+    entries: { sunday: { enabled: true } },
   },
 };
 require("fs").writeFileSync(

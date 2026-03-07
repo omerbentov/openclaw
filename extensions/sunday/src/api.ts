@@ -111,19 +111,20 @@ export async function fetchPendingMessages(
   });
 }
 
-/** Send a text message. `userId` is required by the Sunday API; `conversationId` is optional (auto-resolved if omitted). */
+/** Send a message. `userId` is required; `conversationId` is optional (auto-resolved). */
 export async function sendMessage(
   creds: SundayCredentials,
   target: { userId: string; conversationId?: string },
   message: string,
-  metadata?: Record<string, unknown>,
+  options?: { type?: string; metadata?: Record<string, unknown> },
 ): Promise<SundayApiResponse<{ messageId: string; conversationId: string }>> {
   return callSundayApi(creds, "/sendMessage", {
     body: {
       userId: target.userId,
       message,
       ...(target.conversationId ? { conversationId: target.conversationId } : {}),
-      ...(metadata ? { metadata } : {}),
+      ...(options?.type ? { type: options.type } : {}),
+      ...(options?.metadata ? { metadata: options.metadata } : {}),
     },
   });
 }
@@ -138,19 +139,108 @@ export async function markMessagesAsRead(
   });
 }
 
-/** Send a message with interactive decision buttons. */
-export async function sendMessageWithButtons(
+/** Get messages for a conversation. */
+export async function getMessages(
   creds: SundayCredentials,
-  target: { userId: string; conversationId?: string },
-  message: string,
-  buttons: Array<{ id: string; label: string }>,
-): Promise<SundayApiResponse<{ messageId: string; conversationId: string }>> {
-  return callSundayApi(creds, "/sendMessageV2", {
-    body: {
-      userId: target.userId,
-      message,
-      ...(target.conversationId ? { conversationId: target.conversationId } : {}),
-      buttons,
-    },
+  conversationId: string,
+): Promise<SundayApiResponse<{ messages: SundayPendingMessage[] }>> {
+  return callSundayApi(creds, `/getMessages?conversationId=${encodeURIComponent(conversationId)}`, {
+    method: "GET",
   });
+}
+
+/** Request user permission for an action. */
+export async function requestPermission(
+  creds: SundayCredentials,
+  params: { userId: string; conversationId: string; action: string; reason: string },
+): Promise<SundayApiResponse<{ permissionId: string; messageId: string }>> {
+  return callSundayApi(creds, "/requestPermission", { body: params });
+}
+
+/** Check the status of a permission request. */
+export async function checkPermission(
+  creds: SundayCredentials,
+  permissionId: string,
+): Promise<
+  SundayApiResponse<{
+    permissionId: string;
+    status: "pending" | "approved" | "denied";
+    respondedAt: string | null;
+  }>
+> {
+  return callSundayApi(creds, `/checkPermission?permissionId=${encodeURIComponent(permissionId)}`, {
+    method: "GET",
+  });
+}
+
+/** Send a task progress update. */
+export async function updateTaskStatus(
+  creds: SundayCredentials,
+  params: {
+    userId: string;
+    conversationId: string;
+    taskName: string;
+    status: string;
+    progress: number;
+  },
+): Promise<SundayApiResponse<{ messageId: string }>> {
+  return callSundayApi(creds, "/updateTaskStatus", { body: params });
+}
+
+/** Update an existing todo_list message in-place. */
+export async function updateTodoList(
+  creds: SundayCredentials,
+  params: {
+    messageId: string;
+    items: Array<{ id: string; title: string; status: string }>;
+    status?: string;
+  },
+): Promise<SundayApiResponse> {
+  return callSundayApi(creds, "/updateTodoList", { body: params });
+}
+
+/** Store a key-value pair scoped to a conversation. */
+export async function setContext(
+  creds: SundayCredentials,
+  params: { conversationId: string; key: string; value: string },
+): Promise<SundayApiResponse> {
+  return callSundayApi(creds, "/setContext", { body: params });
+}
+
+/** Retrieve a context value by key. */
+export async function getContext(
+  creds: SundayCredentials,
+  conversationId: string,
+  key: string,
+): Promise<SundayApiResponse<{ value: string }>> {
+  return callSundayApi(
+    creds,
+    `/getContext?conversationId=${encodeURIComponent(conversationId)}&key=${encodeURIComponent(key)}`,
+    { method: "GET" },
+  );
+}
+
+/** Delete a context value by key. */
+export async function deleteContext(
+  creds: SundayCredentials,
+  conversationId: string,
+  key: string,
+): Promise<SundayApiResponse> {
+  return callSundayApi(
+    creds,
+    `/deleteContext?conversationId=${encodeURIComponent(conversationId)}&key=${encodeURIComponent(key)}`,
+    { method: "DELETE" },
+  );
+}
+
+/** List all context keys for a conversation. */
+export async function listContextKeys(
+  creds: SundayCredentials,
+  conversationId: string,
+): Promise<SundayApiResponse<{ keys: string[] }>> {
+  return callSundayApi(
+    creds,
+    `/listContextKeys?conversationId=${encodeURIComponent(conversationId)}`,
+    { method: "GET" },
+  );
 }

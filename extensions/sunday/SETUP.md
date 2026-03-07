@@ -40,7 +40,7 @@ The image reads these env vars at startup to auto-configure OpenClaw:
 | ------------------------ | ------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | `SUNDAY_AGENT_ID`        | Yes           | —                                                         | Agent ID (created by the backend during provisioning)                        |
 | `SUNDAY_API_KEY`         | Yes           | —                                                         | Agent API key (64-char hex)                                                  |
-| `SUNDAY_API_SECRET`      | Yes           | —                                                         | Agent secret for HMAC verification                                           |
+| `SUNDAY_WEBHOOK_SECRET`  | Yes           | —                                                         | Agent secret for HMAC verification                                           |
 | `SUNDAY_API_BASE_URL`    | No            | `https://sunday-backend-612819501028.us-central1.run.app` | Sunday backend URL                                                           |
 | `MODEL_API_KEY`          | Yes           | —                                                         | AI model provider API key                                                    |
 | `MODEL_BASE_URL`         | No            | `https://api.deepseek.com/v1`                             | Model API endpoint                                                           |
@@ -84,7 +84,7 @@ provisions an OpenClaw Cloud Run service for a user.
 4. **Deploy to Cloud Run** via the Cloud Run Admin API v2 or `@google-cloud/run` SDK:
    - **Image**: `gcr.io/{PROJECT}/openclaw-sunday:latest`
    - **Port**: `8080`
-   - **Env vars**: `SUNDAY_AGENT_ID`, `SUNDAY_API_KEY`, `SUNDAY_API_SECRET`,
+   - **Env vars**: `SUNDAY_AGENT_ID`, `SUNDAY_API_KEY`, `SUNDAY_WEBHOOK_SECRET`,
      `SUNDAY_API_BASE_URL`, `MODEL_API_KEY`, `MODEL_BASE_URL`, `MODEL_ID`,
      `SERVICE_URL`
    - **Settings**:
@@ -193,7 +193,7 @@ under `channels.sunday`:
 ```bash
 export SUNDAY_AGENT_ID="your-agent-id"
 export SUNDAY_API_KEY="your-api-key"
-export SUNDAY_API_SECRET="your-api-secret"
+export SUNDAY_WEBHOOK_SECRET="your-api-secret"
 export SUNDAY_API_BASE_URL="https://sunday-backend-612819501028.us-central1.run.app"
 ```
 

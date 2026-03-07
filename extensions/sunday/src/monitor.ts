@@ -156,12 +156,58 @@ export async function handleSundayWebhookRequest(
     processInboundMessage(event, target).catch((err) => {
       target.runtime.error?.(`[${target.account.accountId}] Sunday webhook failed: ${String(err)}`);
     });
+  } else if (event.event === "agent.installed") {
+    processAgentInstalled(event, target).catch((err) => {
+      target.runtime.error?.(
+        `[${target.account.accountId}] Sunday agent.installed handler failed: ${String(err)}`,
+      );
+    });
+  } else if (event.event === "agent.uninstalled") {
+    target.runtime.log?.(
+      `[${target.account.accountId}] Agent uninstalled by userId=${data?.userId ?? "?"}`,
+    );
+  } else if (event.event === "permission.response") {
+    target.runtime.log?.(
+      `[${target.account.accountId}] Permission ${data?.permissionId ?? "?"} ${data?.status ?? "?"} by userId=${data?.userId ?? "?"}`,
+    );
+  } else if (event.event === "decision.response") {
+    target.runtime.log?.(
+      `[${target.account.accountId}] Decision response: userId=${data?.userId ?? "?"} selected="${data?.selectedOption ?? "?"}"`,
+    );
   }
-  // permission.response, decision.response, agent.* events: acknowledge only (extensible later)
 
   res.statusCode = 200;
   res.end("ok");
   return true;
+}
+
+async function processAgentInstalled(
+  event: SundayWebhookEvent,
+  target: WebhookTarget,
+): Promise<void> {
+  const data = event.data;
+  const userId = data.userId;
+  if (!userId) return;
+  target.runtime.log?.(
+    `[${target.account.accountId}] Agent installed by userId=${userId}, sending welcome`,
+  );
+  const creds: SundayCredentials = {
+    agentId: target.account.agentId,
+    apiKey: target.account.apiKey,
+    apiBaseUrl: target.account.apiBaseUrl,
+  };
+  try {
+    await sendMessage(
+      creds,
+      { userId, conversationId: data.conversationId },
+      "👋 Hello! I'm ready to help. Send me a message to get started.",
+    );
+    target.statusSink?.({ lastOutboundAt: Date.now() });
+  } catch (err) {
+    target.runtime.error?.(
+      `[${target.account.accountId}] Welcome message failed for ${userId}: ${String(err)}`,
+    );
+  }
 }
 
 async function processInboundMessage(
@@ -389,7 +435,7 @@ async function processMessageWithPipeline(params: {
         runtime.error?.(`[${account.accountId}] Sunday ${info.kind} reply failed: ${String(err)}`);
       },
     },
-    replyOptions: { onModelSelected },
+    replyOptions: { onModelSelected, disableBlockStreaming: true },
   });
 }
 

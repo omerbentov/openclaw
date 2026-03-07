@@ -27,6 +27,7 @@ import {
 } from "./accounts.js";
 import { sendMessage, type SundayCredentials } from "./api.js";
 import { SundayConfigSchema } from "./config-schema.js";
+import { createSundayActions } from "./message-actions.js";
 import { sundayOnboardingAdapter } from "./onboarding.js";
 import { probeSunday } from "./probe.js";
 import { sendMessageSunday } from "./send.js";
@@ -44,6 +45,23 @@ const meta = {
   quickstartAllowFrom: true,
 };
 
+const sundayAgentPrompt: NonNullable<ChannelDock["agentPrompt"]> = {
+  messageToolHints: () => [
+    "- Sunday supports rich message types. Set `type` and `metadata` on `action=send` to render structured UI in the chat.",
+    '- `type: "progress"` — progress bar: `metadata: { taskName, status, progress (0-100), currentStep, totalSteps }`.',
+    '- `type: "decision"` — interactive buttons the user can tap: `metadata: { question, options: ["A","B"], status: "pending" }`.',
+    '- `type: "todo_list"` — checklist: `metadata: { items: [{id, title, status}], progress, status }`. Update in-place with `action: "updateTodoList"`.',
+    '- `type: "chart"` — data visualization: `metadata: { title, chartType (bar|pie|line), data: [{label, value}] }`.',
+    '- `type: "code"` — syntax-highlighted code block: `metadata: { language, code, filename }`.',
+    '- `type: "image"` — image display: `metadata: { imageUrl, caption }`.',
+    '- `type: "markdown"` — rich formatted text: `metadata: { title }`.',
+    '- `type: "ui_approval"` — approve/deny card: `metadata: { action, description, imageUrl, status }`.',
+    "- Use `requestPermission` / `checkPermission` actions for explicit user consent before sensitive operations.",
+    "- Use `updateTaskStatus` to show real-time task progress in the conversation.",
+    "- Prefer rich types over plain text when the content is structured (lists, progress, choices, code, data).",
+  ],
+};
+
 function normalizeSundayMessagingTarget(raw: string): string | undefined {
   const trimmed = raw?.trim();
   if (!trimmed) {
@@ -56,7 +74,7 @@ export const sundayDock: ChannelDock = {
   id: "sunday",
   capabilities: {
     chatTypes: ["direct"],
-    blockStreaming: true,
+    blockStreaming: false,
   },
   outbound: { textChunkLimit: 4000 },
   config: {
@@ -73,6 +91,7 @@ export const sundayDock: ChannelDock = {
   threading: {
     resolveReplyToMode: () => "off",
   },
+  agentPrompt: sundayAgentPrompt,
 };
 
 export const sundayPlugin: ChannelPlugin<ResolvedSundayAccount> = {
@@ -86,7 +105,7 @@ export const sundayPlugin: ChannelPlugin<ResolvedSundayAccount> = {
     threads: false,
     polls: false,
     nativeCommands: false,
-    blockStreaming: true,
+    blockStreaming: false,
   },
   reload: { configPrefixes: ["channels.sunday"] },
   configSchema: buildChannelConfigSchema(SundayConfigSchema),
@@ -145,6 +164,8 @@ export const sundayPlugin: ChannelPlugin<ResolvedSundayAccount> = {
   groups: {
     resolveRequireMention: () => true,
   },
+  actions: createSundayActions(),
+  agentPrompt: sundayAgentPrompt,
   threading: {
     resolveReplyToMode: () => "off",
   },

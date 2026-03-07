@@ -226,7 +226,7 @@ const [operation] = await client.createService({
           env: [
             { name: "SUNDAY_AGENT_ID", value: agentId },
             { name: "SUNDAY_API_KEY", value: apiKey },
-            { name: "SUNDAY_API_SECRET", value: apiSecret },
+            { name: "SUNDAY_WEBHOOK_SECRET", value: apiSecret },
             {
               name: "SUNDAY_API_BASE_URL",
               value: "https://sunday-backend-612819501028.us-central1.run.app",
@@ -280,7 +280,7 @@ const result = execSync(
   --set-env-vars "\
 SUNDAY_AGENT_ID=${agentId},\
 SUNDAY_API_KEY=${apiKey},\
-SUNDAY_API_SECRET=${apiSecret},\
+SUNDAY_WEBHOOK_SECRET=${apiSecret},\
 SUNDAY_API_BASE_URL=https://sunday-backend-612819501028.us-central1.run.app,\
 MODEL_API_KEY=${req.body.modelApiKey},\
 MODEL_BASE_URL=${req.body.modelBaseUrl || "https://api.deepseek.com/v1"},\
@@ -371,7 +371,7 @@ config file.
 | ------------------------ | ------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `SUNDAY_AGENT_ID`        | Yes           | —                                                         | Agent ID (created by the backend in Step 3)                                                                                                                                       |
 | `SUNDAY_API_KEY`         | Yes           | —                                                         | Agent API key (64-char hex)                                                                                                                                                       |
-| `SUNDAY_API_SECRET`      | Yes           | —                                                         | Agent webhook secret for HMAC verification                                                                                                                                        |
+| `SUNDAY_WEBHOOK_SECRET`  | Yes           | —                                                         | Agent webhook secret for HMAC verification                                                                                                                                        |
 | `SUNDAY_API_BASE_URL`    | No            | `https://sunday-backend-612819501028.us-central1.run.app` | Sunday backend URL                                                                                                                                                                |
 | `MODEL_API_KEY`          | Yes           | —                                                         | AI model provider API key (from agent creator)                                                                                                                                    |
 | `MODEL_BASE_URL`         | No            | `https://api.deepseek.com/v1`                             | Model API endpoint                                                                                                                                                                |

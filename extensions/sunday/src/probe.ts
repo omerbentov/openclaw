@@ -1,5 +1,5 @@
 import type { BaseProbeResult } from "openclaw/plugin-sdk";
-import { fetchPendingMessages, SundayApiError, type SundayCredentials } from "./api.js";
+import { callSundayApi, SundayApiError, type SundayCredentials } from "./api.js";
 import type { ResolvedSundayAccount } from "./types.js";
 
 export type SundayProbeResult = BaseProbeResult<string> & {
@@ -10,27 +10,36 @@ export async function probeSunday(
   account: ResolvedSundayAccount,
   timeoutMs = 5000,
 ): Promise<SundayProbeResult> {
-  if (!account.agentId?.trim() || !account.apiKey?.trim() || !account.apiSecret?.trim()) {
+  if (!account.agentId?.trim() || !account.apiKey?.trim()) {
     return { ok: false, error: "No credentials provided", elapsedMs: 0 };
   }
 
   const creds: SundayCredentials = {
     agentId: account.agentId,
     apiKey: account.apiKey,
-    apiSecret: account.apiSecret,
     apiBaseUrl: account.apiBaseUrl,
   };
 
   const startTime = Date.now();
 
   try {
-    await fetchPendingMessages(creds, timeoutMs);
+    // Lightweight probe: call getAgentInfo instead of getPendingMessages to
+    // avoid side effects and unnecessary data transfer during health checks.
+    await callSundayApi(creds, "/getAgentInfo", {
+      method: "GET",
+      timeoutMs,
+    });
     const elapsedMs = Date.now() - startTime;
     return { ok: true, elapsedMs };
   } catch (err) {
     const elapsedMs = Date.now() - startTime;
 
     if (err instanceof SundayApiError) {
+      // A 404 means the endpoint doesn't exist but the server is reachable
+      // — treat as healthy since credentials authenticated successfully.
+      if (err.statusCode === 404) {
+        return { ok: true, elapsedMs };
+      }
       return { ok: false, error: err.errorBody ?? err.message, elapsedMs };
     }
 

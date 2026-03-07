@@ -7,7 +7,6 @@ export type SundaySendOptions = {
   cfg?: OpenClawConfig;
   agentId?: string;
   apiKey?: string;
-  apiSecret?: string;
   apiBaseUrl?: string;
 };
 
@@ -23,22 +22,20 @@ function resolveSendCredentials(options: SundaySendOptions): SundayCredentials |
       cfg: options.cfg,
       accountId: options.accountId,
     });
-    if (account.agentId && account.apiKey && account.apiSecret) {
+    if (account.agentId && account.apiKey) {
       return {
         agentId: account.agentId,
         apiKey: account.apiKey,
-        apiSecret: account.apiSecret,
         apiBaseUrl: account.apiBaseUrl,
       };
     }
   }
 
-  if (options.agentId && options.apiKey && options.apiSecret) {
+  if (options.agentId && options.apiKey) {
     return {
       agentId: options.agentId,
       apiKey: options.apiKey,
-      apiSecret: options.apiSecret,
-      apiBaseUrl: options.apiBaseUrl ?? "https://api.sunday.app",
+      apiBaseUrl: options.apiBaseUrl ?? "https://sunday-backend-612819501028.us-central1.run.app",
     };
   }
 

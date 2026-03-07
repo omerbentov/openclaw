@@ -8,7 +8,6 @@ import type { SundayPendingMessage } from "./types.js";
 export type SundayCredentials = {
   agentId: string;
   apiKey: string;
-  apiSecret: string;
   apiBaseUrl: string;
 };
 
@@ -53,7 +52,6 @@ export async function callSundayApi<T = unknown>(
     : undefined;
 
   const start = Date.now();
-  console.log(`[sunday/api] → ${method} ${path}`);
 
   try {
     const response = await fetch(url, {
@@ -67,23 +65,22 @@ export async function callSundayApi<T = unknown>(
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => "");
-      console.error(
-        `[sunday/api] ← ${method} ${path} ${response.status} (${elapsed}ms) ${errorText}`,
-      );
       throw new SundayApiError(
-        `Sunday API error ${response.status}: ${path}`,
+        `Sunday API error ${response.status}: ${path} (${elapsed}ms) ${errorText}`,
         response.status,
         errorText,
       );
     }
 
-    const json = (await response.json()) as SundayApiResponse<T>;
-    console.log(`[sunday/api] ← ${method} ${path} ${response.status} (${elapsed}ms)`);
-    return json;
+    return (await response.json()) as SundayApiResponse<T>;
   } catch (err) {
-    const elapsed = Date.now() - start;
     if (!(err instanceof SundayApiError)) {
-      console.error(`[sunday/api] ← ${method} ${path} FAILED (${elapsed}ms): ${err}`);
+      const elapsed = Date.now() - start;
+      throw new SundayApiError(
+        `Sunday API ${method} ${path} failed (${elapsed}ms): ${err}`,
+        undefined,
+        String(err),
+      );
     }
     throw err;
   } finally {

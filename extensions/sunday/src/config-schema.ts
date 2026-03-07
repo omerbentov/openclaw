@@ -7,12 +7,13 @@ const sundayAccountSchema = z.object({
   enabled: z.boolean().optional(),
   agentId: z.string().optional(),
   apiKey: z.string().optional(),
-  apiSecret: z.string().optional(),
+  webhookSecret: z.string().optional(),
   apiBaseUrl: z.string().optional(),
   webhookUrl: z.string().optional(),
   webhookPath: z.string().optional(),
   dmPolicy: z.enum(["pairing", "allowlist", "open", "disabled"]).optional(),
   allowFrom: z.array(allowFromEntry).optional(),
+  systemPrompt: z.string().optional(),
 });
 
 export const SundayConfigSchema = sundayAccountSchema.extend({

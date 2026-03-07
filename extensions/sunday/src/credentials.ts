@@ -4,7 +4,6 @@ import type { SundayConfig, SundayCredentialSource } from "./types.js";
 export type SundayCredentialResolution = {
   agentId: string;
   apiKey: string;
-  apiSecret: string;
   source: SundayCredentialSource;
 };
 
@@ -22,27 +21,24 @@ export function resolveSundayCredentials(
   if (accountConfig) {
     const agentId = accountConfig.agentId?.trim();
     const apiKey = accountConfig.apiKey?.trim();
-    const apiSecret = accountConfig.apiSecret?.trim();
-    if (agentId && apiKey && apiSecret) {
-      return { agentId, apiKey, apiSecret, source: "config" };
+    if (agentId && apiKey) {
+      return { agentId, apiKey, source: "config" };
     }
   }
 
   if (isDefaultAccount) {
     const agentId = config?.agentId?.trim();
     const apiKey = config?.apiKey?.trim();
-    const apiSecret = config?.apiSecret?.trim();
-    if (agentId && apiKey && apiSecret) {
-      return { agentId, apiKey, apiSecret, source: "config" };
+    if (agentId && apiKey) {
+      return { agentId, apiKey, source: "config" };
     }
 
     const envAgentId = process.env.SUNDAY_AGENT_ID?.trim();
     const envApiKey = process.env.SUNDAY_API_KEY?.trim();
-    const envApiSecret = process.env.SUNDAY_API_SECRET?.trim();
-    if (envAgentId && envApiKey && envApiSecret) {
-      return { agentId: envAgentId, apiKey: envApiKey, apiSecret: envApiSecret, source: "env" };
+    if (envAgentId && envApiKey) {
+      return { agentId: envAgentId, apiKey: envApiKey, source: "env" };
     }
   }
 
-  return { agentId: "", apiKey: "", apiSecret: "", source: "none" };
+  return { agentId: "", apiKey: "", source: "none" };
 }

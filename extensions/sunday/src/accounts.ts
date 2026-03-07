@@ -5,7 +5,9 @@ import type { ResolvedSundayAccount, SundayAccountConfig, SundayConfig } from ".
 
 export type { ResolvedSundayAccount };
 
-const DEFAULT_API_BASE_URL = process.env.SUNDAY_API_BASE_URL?.trim() || "https://api.sunday.app";
+const DEFAULT_API_BASE_URL =
+  process.env.SUNDAY_API_BASE_URL?.trim() ||
+  "https://sunday-backend-612819501028.us-central1.run.app";
 
 function listConfiguredAccountIds(cfg: OpenClawConfig): string[] {
   const accounts = (cfg.channels?.sunday as SundayConfig | undefined)?.accounts;
@@ -73,7 +75,7 @@ export function resolveSundayAccount(params: {
     enabled,
     agentId: creds.agentId,
     apiKey: creds.apiKey,
-    apiSecret: creds.apiSecret,
+    webhookSecret: merged.webhookSecret?.trim() || "",
     apiBaseUrl: merged.apiBaseUrl?.trim() || DEFAULT_API_BASE_URL,
     credentialSource: creds.source,
     config: merged,

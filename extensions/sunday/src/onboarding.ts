@@ -43,8 +43,8 @@ async function noteSundayCredentialHelp(prompter: WizardPrompter): Promise<void>
     [
       "1) Open Sunday settings: Settings → My Agents (or Developer Portal)",
       '2) Click "Add Agent" and save your credentials',
-      "3) You need: Agent ID, API Key, API Secret",
-      "Tip: you can also set SUNDAY_AGENT_ID, SUNDAY_API_KEY, SUNDAY_API_SECRET env vars.",
+      "3) You need: Agent ID, API Key, and Webhook Secret",
+      "Tip: you can also set SUNDAY_AGENT_ID, SUNDAY_API_KEY env vars.",
       "Docs: https://sunday-bot-1770837759.firebaseapp.com/docs",
     ].join("\n"),
     "Sunday agent credentials",
@@ -132,7 +132,7 @@ export const sundayOnboardingAdapter: ChannelOnboardingAdapter = {
   getStatus: async ({ cfg }) => {
     const configured = listSundayAccountIds(cfg).some((accountId) => {
       const account = resolveSundayAccount({ cfg, accountId });
-      return Boolean(account.agentId && account.apiKey && account.apiSecret);
+      return Boolean(account.agentId && account.apiKey);
     });
     return {
       channel,
@@ -167,26 +167,18 @@ export const sundayOnboardingAdapter: ChannelOnboardingAdapter = {
 
     let next = cfg;
     const resolvedAccount = resolveSundayAccount({ cfg: next, accountId: sundayAccountId });
-    const accountConfigured = Boolean(
-      resolvedAccount.agentId && resolvedAccount.apiKey && resolvedAccount.apiSecret,
-    );
+    const accountConfigured = Boolean(resolvedAccount.agentId && resolvedAccount.apiKey);
     const allowEnv = sundayAccountId === DEFAULT_ACCOUNT_ID;
     const canUseEnv =
       allowEnv &&
-      Boolean(
-        process.env.SUNDAY_AGENT_ID?.trim() &&
-        process.env.SUNDAY_API_KEY?.trim() &&
-        process.env.SUNDAY_API_SECRET?.trim(),
-      );
+      Boolean(process.env.SUNDAY_AGENT_ID?.trim() && process.env.SUNDAY_API_KEY?.trim());
     const hasConfigCredentials = Boolean(
-      resolvedAccount.config.agentId &&
-      resolvedAccount.config.apiKey &&
-      resolvedAccount.config.apiSecret,
+      resolvedAccount.config.agentId && resolvedAccount.config.apiKey,
     );
 
     let agentId: string | null = null;
     let apiKey: string | null = null;
-    let apiSecret: string | null = null;
+    let webhookSecret: string | null = null;
 
     if (!accountConfigured) {
       await noteSundayCredentialHelp(prompter);
@@ -206,7 +198,7 @@ export const sundayOnboardingAdapter: ChannelOnboardingAdapter = {
           },
         } as OpenClawConfig;
       } else {
-        ({ agentId, apiKey, apiSecret } = await promptCredentials(prompter));
+        ({ agentId, apiKey, webhookSecret } = await promptCredentials(prompter));
       }
     } else if (hasConfigCredentials) {
       const keep = await prompter.confirm({
@@ -214,13 +206,13 @@ export const sundayOnboardingAdapter: ChannelOnboardingAdapter = {
         initialValue: true,
       });
       if (!keep) {
-        ({ agentId, apiKey, apiSecret } = await promptCredentials(prompter));
+        ({ agentId, apiKey, webhookSecret } = await promptCredentials(prompter));
       }
     } else {
-      ({ agentId, apiKey, apiSecret } = await promptCredentials(prompter));
+      ({ agentId, apiKey, webhookSecret } = await promptCredentials(prompter));
     }
 
-    if (agentId && apiKey && apiSecret) {
+    if (agentId && apiKey) {
       if (sundayAccountId === DEFAULT_ACCOUNT_ID) {
         next = {
           ...next,
@@ -231,7 +223,7 @@ export const sundayOnboardingAdapter: ChannelOnboardingAdapter = {
               enabled: true,
               agentId,
               apiKey,
-              apiSecret,
+              ...(webhookSecret ? { webhookSecret } : {}),
             },
           },
         } as OpenClawConfig;
@@ -250,7 +242,7 @@ export const sundayOnboardingAdapter: ChannelOnboardingAdapter = {
                   enabled: true,
                   agentId,
                   apiKey,
-                  apiSecret,
+                  ...(webhookSecret ? { webhookSecret } : {}),
                 },
               },
             },
@@ -314,7 +306,7 @@ export const sundayOnboardingAdapter: ChannelOnboardingAdapter = {
 
 async function promptCredentials(
   prompter: WizardPrompter,
-): Promise<{ agentId: string; apiKey: string; apiSecret: string }> {
+): Promise<{ agentId: string; apiKey: string; webhookSecret: string }> {
   const agentId = String(
     await prompter.text({
       message: "Enter Sunday Agent ID",
@@ -327,11 +319,11 @@ async function promptCredentials(
       validate: (value) => (value?.trim() ? undefined : "Required"),
     }),
   ).trim();
-  const apiSecret = String(
+  const webhookSecret = String(
     await prompter.text({
-      message: "Enter Sunday API Secret",
+      message: "Enter Sunday Webhook Secret",
       validate: (value) => (value?.trim() ? undefined : "Required"),
     }),
   ).trim();
-  return { agentId, apiKey, apiSecret };
+  return { agentId, apiKey, webhookSecret };
 }

@@ -107,17 +107,14 @@ export const sundayPlugin: ChannelPlugin<ResolvedSundayAccount> = {
         cfg,
         sectionKey: "sunday",
         accountId,
-        clearBaseFields: ["agentId", "apiKey", "apiSecret", "name"],
+        clearBaseFields: ["agentId", "apiKey", "webhookSecret", "name"],
       }),
-    isConfigured: (account) =>
-      Boolean(account.agentId?.trim() && account.apiKey?.trim() && account.apiSecret?.trim()),
+    isConfigured: (account) => Boolean(account.agentId?.trim() && account.apiKey?.trim()),
     describeAccount: (account): ChannelAccountSnapshot => ({
       accountId: account.accountId,
       name: account.name,
       enabled: account.enabled,
-      configured: Boolean(
-        account.agentId?.trim() && account.apiKey?.trim() && account.apiSecret?.trim(),
-      ),
+      configured: Boolean(account.agentId?.trim() && account.apiKey?.trim()),
       tokenSource: account.credentialSource,
     }),
     resolveAllowFrom: ({ cfg, accountId }) =>
@@ -215,11 +212,11 @@ export const sundayPlugin: ChannelPlugin<ResolvedSundayAccount> = {
           ? migrateBaseNameToDefaultAccount({ cfg: namedConfig, channelKey: "sunday" })
           : namedConfig;
 
-      // Parse compound token: "agentId:apiKey:apiSecret"
+      // Parse compound token: "agentId:apiKey:webhookSecret"
       const parts = input.token?.split(":") ?? [];
       const agentId = parts[0]?.trim();
       const apiKey = parts[1]?.trim();
-      const apiSecret = parts[2]?.trim();
+      const webhookSecret = parts[2]?.trim();
 
       if (accountId === DEFAULT_ACCOUNT_ID) {
         return {
@@ -231,8 +228,8 @@ export const sundayPlugin: ChannelPlugin<ResolvedSundayAccount> = {
               enabled: true,
               ...(input.useEnv
                 ? {}
-                : agentId && apiKey && apiSecret
-                  ? { agentId, apiKey, apiSecret }
+                : agentId && apiKey
+                  ? { agentId, apiKey, ...(webhookSecret ? { webhookSecret } : {}) }
                   : {}),
             },
           },
@@ -250,7 +247,9 @@ export const sundayPlugin: ChannelPlugin<ResolvedSundayAccount> = {
               [accountId]: {
                 ...next.channels?.sunday?.accounts?.[accountId],
                 enabled: true,
-                ...(agentId && apiKey && apiSecret ? { agentId, apiKey, apiSecret } : {}),
+                ...(agentId && apiKey
+                  ? { agentId, apiKey, ...(webhookSecret ? { webhookSecret } : {}) }
+                  : {}),
               },
             },
           },
@@ -263,13 +262,12 @@ export const sundayPlugin: ChannelPlugin<ResolvedSundayAccount> = {
     normalizeAllowEntry: (entry) => entry.replace(/^(sunday|sun):/i, ""),
     notifyApproval: async ({ cfg, id }) => {
       const account = resolveSundayAccount({ cfg });
-      if (!account.agentId || !account.apiKey || !account.apiSecret) {
+      if (!account.agentId || !account.apiKey) {
         throw new Error("Sunday credentials not configured");
       }
       const creds: SundayCredentials = {
         agentId: account.agentId,
         apiKey: account.apiKey,
-        apiSecret: account.apiSecret,
         apiBaseUrl: account.apiBaseUrl,
       };
       await sendMessage(creds, { userId: id }, PAIRING_APPROVED_MESSAGE);
@@ -328,9 +326,7 @@ export const sundayPlugin: ChannelPlugin<ResolvedSundayAccount> = {
     }),
     probeAccount: async ({ account, timeoutMs }) => probeSunday(account, timeoutMs),
     buildAccountSnapshot: ({ account, runtime }) => {
-      const configured = Boolean(
-        account.agentId?.trim() && account.apiKey?.trim() && account.apiSecret?.trim(),
-      );
+      const configured = Boolean(account.agentId?.trim() && account.apiKey?.trim());
       return {
         accountId: account.accountId,
         name: account.name,
@@ -352,15 +348,6 @@ export const sundayPlugin: ChannelPlugin<ResolvedSundayAccount> = {
     startAccount: async (ctx) => {
       const account = ctx.account;
       ctx.log?.info(`[${account.accountId}] starting Sunday provider`);
-
-      try {
-        const probe = await probeSunday(account, 5000);
-        if (probe.ok) {
-          ctx.setStatus({ accountId: account.accountId });
-        }
-      } catch {
-        // ignore probe errors during startup
-      }
 
       const { initSundayProvider } = await import("./monitor.js");
       return initSundayProvider({

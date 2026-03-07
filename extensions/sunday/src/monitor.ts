@@ -62,12 +62,8 @@ function verifySignature(body: string, signature: string, secret: string): boole
   if (!signature || !secret) {
     return false;
   }
-  // X-Sunday-Signature: sha256=<hex>
-  const expectedPrefix = "sha256=";
-  if (!signature.startsWith(expectedPrefix)) {
-    return false;
-  }
-  const receivedHash = signature.slice(expectedPrefix.length);
+  // Sunday sends plain hex; accept optional "sha256=" prefix for flexibility.
+  const receivedHash = signature.startsWith("sha256=") ? signature.slice(7) : signature;
   const computed = createHmac("sha256", secret).update(body).digest("hex");
   return computed === receivedHash;
 }
@@ -89,9 +85,6 @@ export async function handleSundayWebhookRequest(
 ): Promise<boolean> {
   const resolved = resolveWebhookTargets(req, webhookTargets);
   if (!resolved) {
-    // #region agent log
-    console.log(`[sunday/webhook-debug] no webhook target resolved for ${req.url}`);
-    // #endregion
     return false;
   }
   const { targets } = resolved;
@@ -132,33 +125,12 @@ export async function handleSundayWebhookRequest(
   const signature = String(req.headers["x-sunday-signature"] ?? "");
   const bodyString = rawBody;
 
-  // #region agent log
-  console.log(
-    `[sunday/webhook-debug] signature-header="${signature ? signature.slice(0, 20) + "..." : "(empty)"}" body-len=${bodyString.length} targets=${targets.length} secrets-present=${targets.map((t) => (t.account.apiSecret ? `${t.account.apiSecret.length}chars` : "EMPTY")).join(",")}`,
-  );
-  // #endregion
-
-  // Match target by valid signature
+  // Match target by valid HMAC signature (using webhookSecret)
   const matching = targets.filter((t) =>
-    verifySignature(bodyString, signature, t.account.apiSecret),
+    verifySignature(bodyString, signature, t.account.webhookSecret),
   );
 
   if (matching.length === 0) {
-    // #region agent log
-    const computed = targets
-      .map(
-        (t) =>
-          createHmac("sha256", t.account.apiSecret).update(bodyString).digest("hex").slice(0, 12) +
-          "...",
-      )
-      .join(",");
-    const received = signature.startsWith("sha256=")
-      ? signature.slice(7, 19) + "..."
-      : signature.slice(0, 12) + "...";
-    console.error(
-      `[sunday/webhook-debug] HMAC mismatch: received=${received} computed=${computed}`,
-    );
-    // #endregion
     res.statusCode = 401;
     res.end("unauthorized");
     return true;
@@ -174,6 +146,11 @@ export async function handleSundayWebhookRequest(
   }
 
   target.statusSink?.({ lastInboundAt: Date.now() });
+
+  const data = event.data;
+  target.runtime.log?.(
+    `[${target.account.accountId}] Sunday webhook received: event=${event.event} userId=${data?.userId ?? "?"} conversationId=${data?.conversationId ?? "?"} content=${typeof data?.content === "string" ? `"${data.content.slice(0, 100)}"` : "(none)"}`,
+  );
 
   if (event.event === "message.created") {
     processInboundMessage(event, target).catch((err) => {
@@ -191,20 +168,27 @@ async function processInboundMessage(
   event: SundayWebhookEvent,
   target: WebhookTarget,
 ): Promise<void> {
-  const { conversationId, userId } = event;
-  const messageText = typeof event.content === "string" ? event.content : "";
-  const messageId = typeof event.messageId === "string" ? event.messageId : "";
+  const data = event.data;
+  const conversationId = data.conversationId;
+  const userId = data.userId;
+  const messageText = typeof data.content === "string" ? data.content : "";
+  const messageId = typeof data.messageId === "string" ? data.messageId : "";
 
   if (!messageText.trim()) {
+    target.runtime.log?.(`[${target.account.accountId}] Skipping empty message from ${userId}`);
     return;
   }
+
+  target.runtime.log?.(
+    `[${target.account.accountId}] Processing message from ${userId}: "${messageText.slice(0, 80)}"`,
+  );
 
   await processMessageWithPipeline({
     conversationId,
     userId,
     messageId,
     text: messageText,
-    timestamp: event.timestamp,
+    timestamp: data.timestamp ?? event.timestamp,
     account: target.account,
     config: target.config,
     runtime: target.runtime,
@@ -216,7 +200,6 @@ async function processInboundMessage(
     const creds: SundayCredentials = {
       agentId: target.account.agentId,
       apiKey: target.account.apiKey,
-      apiSecret: target.account.apiSecret,
       apiBaseUrl: target.account.apiBaseUrl,
     };
     try {
@@ -263,16 +246,19 @@ async function processMessageWithPipeline(params: {
   });
 
   if (dmPolicy === "disabled") {
+    runtime.log?.(
+      `[${account.accountId}] DM policy is disabled — ignoring message from ${senderId}`,
+    );
     return;
   }
 
   if (dmPolicy !== "open") {
     if (!senderAllowedForCommands) {
+      runtime.log?.(`[${account.accountId}] Sender ${senderId} not allowed (dmPolicy=${dmPolicy})`);
       if (dmPolicy === "pairing") {
         const creds: SundayCredentials = {
           agentId: account.agentId,
           apiKey: account.apiKey,
-          apiSecret: account.apiSecret,
           apiBaseUrl: account.apiBaseUrl,
         };
         const { code, created } = await core.channel.pairing.upsertPairingRequest({
@@ -282,6 +268,9 @@ async function processMessageWithPipeline(params: {
         });
 
         if (created) {
+          runtime.log?.(
+            `[${account.accountId}] Pairing request created for ${senderId} (code=${code})`,
+          );
           try {
             await sendMessage(
               creds,
@@ -296,11 +285,17 @@ async function processMessageWithPipeline(params: {
           } catch (err) {
             runtime.error?.(`sunday pairing reply failed for ${senderId}: ${String(err)}`);
           }
+        } else {
+          runtime.log?.(
+            `[${account.accountId}] Pairing already pending for ${senderId} — ignoring`,
+          );
         }
       }
       return;
     }
   }
+
+  runtime.log?.(`[${account.accountId}] Sender ${senderId} authorized (dmPolicy=${dmPolicy})`);
 
   const route = core.channel.routing.resolveAgentRoute({
     cfg: config,
@@ -308,6 +303,9 @@ async function processMessageWithPipeline(params: {
     accountId: account.accountId,
     peer: { kind: "direct", id: chatId },
   });
+  runtime.log?.(
+    `[${account.accountId}] Routed to agent=${route.agentId} session=${route.sessionKey}`,
+  );
 
   const fromLabel = `user:${senderId}`;
   const storePath = core.channel.session.resolveStorePath(config.session?.store, {
@@ -365,12 +363,17 @@ async function processMessageWithPipeline(params: {
     accountId: account.accountId,
   });
 
+  runtime.log?.(`[${account.accountId}] Dispatching to agent for reply...`);
+
   await core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
     ctx: ctxPayload,
     cfg: config,
     dispatcherOptions: {
       ...prefixOptions,
       deliver: async (payload) => {
+        runtime.log?.(
+          `[${account.accountId}] Delivering reply to ${senderId}: "${(payload.text ?? "").slice(0, 80)}"`,
+        );
         await deliverSundayReply({
           payload,
           account,
@@ -415,7 +418,6 @@ async function deliverSundayReply(params: {
   const creds: SundayCredentials = {
     agentId: account.agentId,
     apiKey: account.apiKey,
-    apiSecret: account.apiSecret,
     apiBaseUrl: account.apiBaseUrl,
   };
 
@@ -445,7 +447,6 @@ export async function initSundayProvider(
   const creds: SundayCredentials = {
     agentId: account.agentId,
     apiKey: account.apiKey,
-    apiSecret: account.apiSecret,
     apiBaseUrl: account.apiBaseUrl,
   };
 
@@ -472,50 +473,77 @@ export async function initSundayProvider(
 
   abortSignal.addEventListener("abort", stop, { once: true });
 
-  // Step 1: Register webhook URL with Sunday
+  // Step 1: Register webhook URL with Sunday (retry up to 3 times since the
+  // Sunday backend may be cold-starting on Cloud Run).
   if (webhookUrl) {
-    try {
-      await registerWebhook(creds, webhookUrl);
-      runtime.log?.(`[${account.accountId}] Sunday webhook registered: ${webhookUrl}`);
-    } catch (err) {
-      runtime.error?.(`[${account.accountId}] Sunday webhook registration failed: ${String(err)}`);
+    let registered = false;
+    for (let attempt = 1; attempt <= 3 && !registered; attempt++) {
+      if (abortSignal.aborted) break;
+      try {
+        await registerWebhook(creds, webhookUrl);
+        runtime.log?.(`[${account.accountId}] Sunday webhook registered: ${webhookUrl}`);
+        registered = true;
+      } catch (err) {
+        runtime.error?.(
+          `[${account.accountId}] Sunday webhook registration failed (attempt ${attempt}/3): ${String(err)}`,
+        );
+        if (attempt < 3 && !abortSignal.aborted) {
+          await new Promise((r) => setTimeout(r, 3_000 * attempt));
+        }
+      }
     }
   }
 
-  // Step 2: Fetch and process pending messages (best-effort; never fatal)
-  try {
-    const pending = await fetchPendingMessages(creds, 10_000);
-    const messages = pending.messages ?? [];
-    if (messages.length > 0) {
-      runtime.log?.(
-        `[${account.accountId}] Processing ${messages.length} pending Sunday message(s)`,
+  // Step 2: Fetch and process pending messages once on startup (catch-up)
+  if (!abortSignal.aborted) {
+    try {
+      const pending = await fetchPendingMessages(creds, 30_000);
+      const messages = pending.messages ?? [];
+      if (messages.length > 0) {
+        runtime.log?.(
+          `[${account.accountId}] Processing ${messages.length} pending Sunday message(s)`,
+        );
+        const processedIds: string[] = [];
+        for (const msg of messages) {
+          try {
+            await processPendingMessage(msg, account, config, runtime, core, statusSink);
+            processedIds.push(msg.id);
+          } catch (msgErr) {
+            runtime.error?.(
+              `[${account.accountId}] Sunday pending message ${msg.id} failed: ${String(msgErr)}`,
+            );
+          }
+        }
+        if (processedIds.length > 0) {
+          try {
+            await markMessagesAsRead(creds, processedIds);
+          } catch (ackErr) {
+            runtime.error?.(
+              `[${account.accountId}] Sunday markMessagesAsRead failed: ${String(ackErr)}`,
+            );
+          }
+        }
+      } else {
+        runtime.log?.(`[${account.accountId}] No pending Sunday messages`);
+      }
+    } catch (err) {
+      runtime.error?.(
+        `[${account.accountId}] Sunday pending messages fetch failed: ${String(err)}`,
       );
-      const processedIds: string[] = [];
-      for (const msg of messages) {
-        try {
-          await processPendingMessage(msg, account, config, runtime, core, statusSink);
-          processedIds.push(msg.id);
-        } catch (msgErr) {
-          runtime.error?.(
-            `[${account.accountId}] Sunday pending message ${msg.id} failed: ${String(msgErr)}`,
-          );
-        }
-      }
-      if (processedIds.length > 0) {
-        try {
-          await markMessagesAsRead(creds, processedIds);
-        } catch (ackErr) {
-          runtime.error?.(
-            `[${account.accountId}] Sunday markMessagesAsRead failed: ${String(ackErr)}`,
-          );
-        }
-      }
-    } else {
-      runtime.log?.(`[${account.accountId}] No pending Sunday messages`);
     }
-  } catch (err) {
-    runtime.error?.(`[${account.accountId}] Sunday pending messages fetch failed: ${String(err)}`);
   }
+
+  runtime.log?.(`[${account.accountId}] Sunday provider ready (webhook mode)`);
+
+  // Keep the provider alive -- webhooks arrive via the HTTP handler.
+  // The provider only exits when the gateway sends the abort signal.
+  await new Promise<void>((resolve) => {
+    if (abortSignal.aborted) {
+      resolve();
+      return;
+    }
+    abortSignal.addEventListener("abort", () => resolve(), { once: true });
+  });
 
   return { stop };
 }

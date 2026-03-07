@@ -7,8 +7,8 @@ export type SundayAccountConfig = {
   agentId?: string;
   /** API key from the Sunday platform. */
   apiKey?: string;
-  /** API secret from the Sunday platform (used for auth and webhook signature verification). */
-  apiSecret?: string;
+  /** Webhook secret for verifying inbound webhook signatures (HMAC-SHA256). */
+  webhookSecret?: string;
   /** Sunday API base URL (default: https://api.sunday.app). */
   apiBaseUrl?: string;
   /** Public webhook URL that Sunday should POST events to. */
@@ -19,6 +19,8 @@ export type SundayAccountConfig = {
   dmPolicy?: "pairing" | "allowlist" | "open" | "disabled";
   /** Allowlist for DM senders (Sunday user IDs). */
   allowFrom?: Array<string | number>;
+  /** Custom system prompt injected into the agent when handling Sunday messages. */
+  systemPrompt?: string;
 };
 
 export type SundayConfig = {
@@ -36,10 +38,21 @@ export type ResolvedSundayAccount = {
   enabled: boolean;
   agentId: string;
   apiKey: string;
-  apiSecret: string;
+  webhookSecret: string;
   apiBaseUrl: string;
   credentialSource: SundayCredentialSource;
   config: SundayAccountConfig;
+};
+
+export type SundayWebhookEventData = {
+  messageId?: string;
+  conversationId: string;
+  userId: string;
+  content?: string;
+  type?: string;
+  timestamp?: string;
+  /** Catch-all for extra fields (scopes, permissionId, etc.). */
+  [key: string]: unknown;
 };
 
 export type SundayWebhookEvent = {
@@ -49,14 +62,8 @@ export type SundayWebhookEvent = {
     | "agent.uninstalled"
     | "permission.response"
     | "decision.response";
-  messageId?: string;
-  conversationId: string;
-  userId: string;
-  content?: string;
-  type?: string;
   timestamp?: string;
-  /** Catch-all for extra webhook fields (scopes, permissionId, etc.). */
-  [key: string]: unknown;
+  data: SundayWebhookEventData;
 };
 
 /** Matches the GET /getPendingMessages response message shape. */

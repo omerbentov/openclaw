@@ -4,7 +4,7 @@ set -euo pipefail
 # Env vars injected by Cloud Run at deploy time:
 #   SUNDAY_AGENT_ID, SUNDAY_API_KEY, SUNDAY_API_SECRET  – read by credentials.ts
 #   SUNDAY_API_BASE_URL  – Sunday backend URL (read by accounts.ts)
-#   SERVICE_URL          – public Cloud Run URL (e.g. https://openclaw-sunday-1-abc123.europe-west1.run.app)
+#   SERVICE_URL          – public Cloud Run URL (auto-detected from metadata server if not set)
 #   MODEL_API_KEY        – AI model provider API key
 #   MODEL_BASE_URL       – model API endpoint (default: https://api.deepseek.com/v1)
 #   MODEL_ID             – model identifier  (default: deepseek-chat)
@@ -26,8 +26,23 @@ if [ -z "${SUNDAY_AGENT_ID:-}" ] || [ -z "${SUNDAY_API_KEY:-}" ] || [ -z "${SUND
   exit 1
 fi
 
+# Auto-detect SERVICE_URL on Cloud Run from metadata server if not explicitly set.
+# Cloud Run sets K_SERVICE automatically; URL format: https://{service}-{project-number}.{region}.run.app
+if [ -z "${SERVICE_URL:-}" ] && [ -n "${K_SERVICE:-}" ]; then
+  META="http://metadata.google.internal/computeMetadata/v1"
+  META_HEADER="Metadata-Flavor: Google"
+  PROJECT_NUMBER="$(curl -sf -H "${META_HEADER}" "${META}/project/numeric-project-id" 2>/dev/null || true)"
+  REGION_RAW="$(curl -sf -H "${META_HEADER}" "${META}/instance/region" 2>/dev/null || true)"
+  REGION="${REGION_RAW##*/}"
+  if [ -n "${PROJECT_NUMBER}" ] && [ -n "${REGION}" ]; then
+    SERVICE_URL="https://${K_SERVICE}-${PROJECT_NUMBER}.${REGION}.run.app"
+    export SERVICE_URL
+    echo "Auto-detected SERVICE_URL: ${SERVICE_URL}"
+  fi
+fi
+
 if [ -z "${SERVICE_URL:-}" ]; then
-  echo "WARNING: SERVICE_URL env var not set – webhook will not be registered; Sunday will use polling only" >&2
+  echo "WARNING: SERVICE_URL not set and could not be auto-detected – webhook will not be registered; Sunday will use polling only" >&2
 fi
 
 if [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then

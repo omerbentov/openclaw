@@ -45,22 +45,31 @@ export async function callSundayApi<T = unknown>(
     timeoutMs?: number;
   },
 ): Promise<SundayApiResponse<T>> {
+  const method = options?.method ?? "POST";
   const url = `${creds.apiBaseUrl}${path}`;
   const controller = new AbortController();
   const timeoutId = options?.timeoutMs
     ? setTimeout(() => controller.abort(), options.timeoutMs)
     : undefined;
 
+  const start = Date.now();
+  console.log(`[sunday/api] → ${method} ${path}`);
+
   try {
     const response = await fetch(url, {
-      method: options?.method ?? "POST",
+      method,
       headers: buildAuthHeaders(creds),
       body: options?.body ? JSON.stringify(options.body) : undefined,
       signal: controller.signal,
     });
 
+    const elapsed = Date.now() - start;
+
     if (!response.ok) {
       const errorText = await response.text().catch(() => "");
+      console.error(
+        `[sunday/api] ← ${method} ${path} ${response.status} (${elapsed}ms) ${errorText}`,
+      );
       throw new SundayApiError(
         `Sunday API error ${response.status}: ${path}`,
         response.status,
@@ -68,7 +77,15 @@ export async function callSundayApi<T = unknown>(
       );
     }
 
-    return (await response.json()) as SundayApiResponse<T>;
+    const json = (await response.json()) as SundayApiResponse<T>;
+    console.log(`[sunday/api] ← ${method} ${path} ${response.status} (${elapsed}ms)`);
+    return json;
+  } catch (err) {
+    const elapsed = Date.now() - start;
+    if (!(err instanceof SundayApiError)) {
+      console.error(`[sunday/api] ← ${method} ${path} FAILED (${elapsed}ms): ${err}`);
+    }
+    throw err;
   } finally {
     if (timeoutId) {
       clearTimeout(timeoutId);

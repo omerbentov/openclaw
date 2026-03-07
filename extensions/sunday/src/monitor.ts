@@ -3,9 +3,10 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
 import {
   createReplyPrefixOptions,
-  readJsonBodyWithLimit,
+  readRequestBodyWithLimit,
   registerWebhookTarget,
   rejectNonPostWebhookRequest,
+  isRequestBodyLimitError,
   requestBodyErrorToText,
   resolveSenderCommandAuthorization,
   resolveWebhookTargets,
@@ -99,25 +100,37 @@ export async function handleSundayWebhookRequest(
     return true;
   }
 
-  // Read the raw body for signature verification
-  const body = await readJsonBodyWithLimit(req, {
-    maxBytes: 1024 * 1024,
-    timeoutMs: 30_000,
-    emptyObjectOnEmpty: false,
-  });
-  if (!body.ok) {
-    res.statusCode =
-      body.code === "PAYLOAD_TOO_LARGE" ? 413 : body.code === "REQUEST_BODY_TIMEOUT" ? 408 : 400;
-    res.end(
-      body.code === "REQUEST_BODY_TIMEOUT"
-        ? requestBodyErrorToText("REQUEST_BODY_TIMEOUT")
-        : body.error,
-    );
+  // Read the raw body string so HMAC is verified against the exact bytes the
+  // Sunday backend signed (re-serializing via JSON.stringify can change whitespace/ordering).
+  let rawBody: string;
+  try {
+    rawBody = await readRequestBodyWithLimit(req, {
+      maxBytes: 1024 * 1024,
+      timeoutMs: 30_000,
+    });
+  } catch (err) {
+    if (isRequestBodyLimitError(err)) {
+      res.statusCode =
+        err.code === "PAYLOAD_TOO_LARGE" ? 413 : err.code === "REQUEST_BODY_TIMEOUT" ? 408 : 400;
+      res.end(requestBodyErrorToText(err.code));
+      return true;
+    }
+    res.statusCode = 400;
+    res.end("bad request");
+    return true;
+  }
+
+  let bodyValue: unknown;
+  try {
+    bodyValue = rawBody.trim() ? JSON.parse(rawBody) : null;
+  } catch {
+    res.statusCode = 400;
+    res.end("invalid JSON");
     return true;
   }
 
   const signature = String(req.headers["x-sunday-signature"] ?? "");
-  const bodyString = JSON.stringify(body.value);
+  const bodyString = rawBody;
 
   // #region agent log
   console.log(
@@ -152,7 +165,7 @@ export async function handleSundayWebhookRequest(
   }
 
   const target = matching[0];
-  const event = body.value as SundayWebhookEvent | null;
+  const event = bodyValue as SundayWebhookEvent | null;
 
   if (!event?.event) {
     res.statusCode = 400;
@@ -436,6 +449,29 @@ export async function initSundayProvider(
     apiBaseUrl: account.apiBaseUrl,
   };
 
+  // Register webhook target FIRST so inbound webhooks are handled immediately,
+  // even while Steps 1-2 (network calls) are still in progress.
+  const path = webhookPath || "/webhooks/sunday";
+  let stopped = false;
+
+  const unregister = registerSundayWebhookTarget({
+    account,
+    config,
+    runtime,
+    core,
+    path,
+    statusSink,
+  });
+
+  const stop = () => {
+    if (!stopped) {
+      stopped = true;
+      unregister();
+    }
+  };
+
+  abortSignal.addEventListener("abort", stop, { once: true });
+
   // Step 1: Register webhook URL with Sunday
   if (webhookUrl) {
     try {
@@ -480,28 +516,6 @@ export async function initSundayProvider(
   } catch (err) {
     runtime.error?.(`[${account.accountId}] Sunday pending messages fetch failed: ${String(err)}`);
   }
-
-  // Step 3: Register webhook target for ongoing inbound messages
-  const path = webhookPath || "/webhooks/sunday";
-  let stopped = false;
-
-  const unregister = registerSundayWebhookTarget({
-    account,
-    config,
-    runtime,
-    core,
-    path,
-    statusSink,
-  });
-
-  const stop = () => {
-    if (!stopped) {
-      stopped = true;
-      unregister();
-    }
-  };
-
-  abortSignal.addEventListener("abort", stop, { once: true });
 
   return { stop };
 }

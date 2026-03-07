@@ -88,6 +88,9 @@ export async function handleSundayWebhookRequest(
 ): Promise<boolean> {
   const resolved = resolveWebhookTargets(req, webhookTargets);
   if (!resolved) {
+    // #region agent log
+    console.log(`[sunday/webhook-debug] no webhook target resolved for ${req.url}`);
+    // #endregion
     return false;
   }
   const { targets } = resolved;
@@ -116,12 +119,33 @@ export async function handleSundayWebhookRequest(
   const signature = String(req.headers["x-sunday-signature"] ?? "");
   const bodyString = JSON.stringify(body.value);
 
+  // #region agent log
+  console.log(
+    `[sunday/webhook-debug] signature-header="${signature ? signature.slice(0, 20) + "..." : "(empty)"}" body-len=${bodyString.length} targets=${targets.length} secrets-present=${targets.map((t) => (t.account.apiSecret ? `${t.account.apiSecret.length}chars` : "EMPTY")).join(",")}`,
+  );
+  // #endregion
+
   // Match target by valid signature
   const matching = targets.filter((t) =>
     verifySignature(bodyString, signature, t.account.apiSecret),
   );
 
   if (matching.length === 0) {
+    // #region agent log
+    const computed = targets
+      .map(
+        (t) =>
+          createHmac("sha256", t.account.apiSecret).update(bodyString).digest("hex").slice(0, 12) +
+          "...",
+      )
+      .join(",");
+    const received = signature.startsWith("sha256=")
+      ? signature.slice(7, 19) + "..."
+      : signature.slice(0, 12) + "...";
+    console.error(
+      `[sunday/webhook-debug] HMAC mismatch: received=${received} computed=${computed}`,
+    );
+    // #endregion
     res.statusCode = 401;
     res.end("unauthorized");
     return true;

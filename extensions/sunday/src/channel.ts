@@ -172,13 +172,12 @@ export const sundayPlugin: ChannelPlugin<ResolvedSundayAccount> = {
   messaging: {
     normalizeTarget: normalizeSundayMessagingTarget,
     targetResolver: {
-      looksLikeId: (raw) => {
-        const trimmed = raw.trim();
-        if (!trimmed) {
+      looksLikeId: (_raw, normalized) => {
+        const id = (normalized ?? _raw)?.trim();
+        if (!id) {
           return false;
         }
-        // Sunday conversation IDs can be alphanumeric with underscores
-        return /^[\w-]+$/.test(trimmed);
+        return /^[\w-]+$/.test(id);
       },
       hint: "<conversationId>",
     },
@@ -370,18 +369,33 @@ export const sundayPlugin: ChannelPlugin<ResolvedSundayAccount> = {
       const account = ctx.account;
       ctx.log?.info(`[${account.accountId}] starting Sunday provider`);
 
+      let webhookUrl = account.config.webhookUrl;
+
+      // Auto-detect Cloud Run service URL when no explicit webhookUrl is set.
+      if (!webhookUrl) {
+        const { resolveCloudRunServiceUrl } = await import("./cloud-run.js");
+        const cloudRunUrl = await resolveCloudRunServiceUrl();
+        if (cloudRunUrl) {
+          const path = account.config.webhookPath ?? "/webhooks/sunday";
+          webhookUrl = `${cloudRunUrl}${path}`;
+          ctx.log?.info(
+            `[${account.accountId}] auto-detected Cloud Run webhook URL: ${webhookUrl}`,
+          );
+        }
+      }
+
       const { initSundayProvider } = await import("./monitor.js");
       return initSundayProvider({
         account,
         config: ctx.cfg,
         runtime: ctx.runtime,
         abortSignal: ctx.abortSignal,
-        webhookUrl: account.config.webhookUrl,
+        webhookUrl,
         webhookPath:
           account.config.webhookPath ??
           resolveWebhookPath({
             webhookPath: account.config.webhookPath,
-            webhookUrl: account.config.webhookUrl,
+            webhookUrl,
             defaultPath: "/webhooks/sunday",
           }) ??
           undefined,

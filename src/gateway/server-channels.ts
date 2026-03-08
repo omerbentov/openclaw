@@ -122,6 +122,10 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
   ) => {
     const plugin = getChannelPlugin(channelId);
     const startAccount = plugin?.gateway?.startAccount;
+    // #region agent log
+    console.error(`[DEBUG:8e0902] startChannelInternal channelId=${String(channelId)} hasStartAccount=${!!startAccount} hasPlugin=${!!plugin}`);
+    fetch('http://127.0.0.1:7641/ingest/2929ff05-81df-45b9-b392-b9957651faae',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8e0902'},body:JSON.stringify({sessionId:'8e0902',location:'server-channels.ts:startChannelInternal',message:'startChannelInternal',data:{channelId:String(channelId),hasStartAccount:!!startAccount,hasPlugin:!!plugin},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
+    // #endregion
     if (!startAccount) {
       return;
     }
@@ -143,6 +147,9 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
         const enabled = plugin.config.isEnabled
           ? plugin.config.isEnabled(account, cfg)
           : isAccountEnabled(account);
+        // #region agent log
+        if (String(channelId) === 'sunday') { console.error(`[DEBUG:8e0902] sunday account check id=${id} enabled=${enabled} accountEnabled=${(account as any).enabled}`); fetch('http://127.0.0.1:7641/ingest/2929ff05-81df-45b9-b392-b9957651faae',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8e0902'},body:JSON.stringify({sessionId:'8e0902',location:'server-channels.ts:accountCheck',message:'sunday account check',data:{id,enabled,accountEnabled:(account as any).enabled},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{}); }
+        // #endregion
         if (!enabled) {
           setRuntime(channelId, id, {
             accountId: id,
@@ -158,6 +165,9 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
         if (plugin.config.isConfigured) {
           configured = await plugin.config.isConfigured(account, cfg);
         }
+        // #region agent log
+        if (String(channelId) === 'sunday') { console.error(`[DEBUG:8e0902] sunday configured=${configured}`); fetch('http://127.0.0.1:7641/ingest/2929ff05-81df-45b9-b392-b9957651faae',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8e0902'},body:JSON.stringify({sessionId:'8e0902',location:'server-channels.ts:configuredCheck',message:'sunday configured check',data:{id,configured},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{}); }
+        // #endregion
         if (!configured) {
           setRuntime(channelId, id, {
             accountId: id,
@@ -324,7 +334,12 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
   };
 
   const startChannels = async () => {
-    for (const plugin of listChannelPlugins()) {
+    // #region agent log
+    const allPlugins = listChannelPlugins();
+    console.error(`[DEBUG:8e0902] startChannels plugins=[${allPlugins.map(p => p.id).join(',')}]`);
+    fetch('http://127.0.0.1:7641/ingest/2929ff05-81df-45b9-b392-b9957651faae',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8e0902'},body:JSON.stringify({sessionId:'8e0902',location:'server-channels.ts:startChannels',message:'startChannels',data:{plugins:allPlugins.map(p=>p.id)},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
+    // #endregion
+    for (const plugin of allPlugins) {
       await startChannel(plugin.id);
     }
   };

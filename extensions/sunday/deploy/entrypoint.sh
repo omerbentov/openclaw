@@ -140,8 +140,16 @@ require("fs").writeFileSync(
 );
 '
 
+echo "--- Generated openclaw.json ---"
+cat "${CONFIG_DIR}/openclaw.json"
+echo "--- End openclaw.json ---"
+
 echo "Config written to ${CONFIG_DIR}/openclaw.json"
 
 export NODE_OPTIONS="--max-old-space-size=3072 ${NODE_OPTIONS:-}"
 
-exec node openclaw.mjs gateway --bind lan --port "${PORT}" --token "${OPENCLAW_GATEWAY_TOKEN}"
+echo "--- Starting gateway ---"
+
+exec node openclaw.mjs gateway --verbose --bind lan --port "${PORT}" --token "${OPENCLAW_GATEWAY_TOKEN}"
+
+echo "--- Gateway Started ---"

@@ -22,6 +22,30 @@ import {
 import { getSundayRuntime } from "./runtime.js";
 import type { SundayPendingMessage, SundayWebhookEvent } from "./types.js";
 
+const SEEN_MESSAGE_TTL_MS = 60_000;
+const SEEN_MESSAGE_MAX_SIZE = 5_000;
+
+// Guard against webhook retries delivering the same messageId twice.
+const seenMessageIds = new Map<string, number>();
+
+function isRecentlySeen(key: string): boolean {
+  const now = Date.now();
+  const seen = seenMessageIds.get(key);
+  if (seen && now - seen < SEEN_MESSAGE_TTL_MS) {
+    return true;
+  }
+  seenMessageIds.set(key, now);
+  // Evict stale entries when the map grows too large.
+  if (seenMessageIds.size > SEEN_MESSAGE_MAX_SIZE) {
+    for (const [k, ts] of seenMessageIds) {
+      if (now - ts > SEEN_MESSAGE_TTL_MS) {
+        seenMessageIds.delete(k);
+      }
+    }
+  }
+  return false;
+}
+
 export type SundayRuntimeEnv = {
   log?: (message: string) => void;
   error?: (message: string) => void;
@@ -210,6 +234,98 @@ async function processAgentInstalled(
   }
 }
 
+type SundayDebounceEntry = {
+  conversationId: string;
+  userId: string;
+  messageId: string;
+  text: string;
+  timestamp?: string;
+};
+
+// Per-account debouncers, lazily created and cleaned up on provider stop.
+const accountDebouncers = new Map<
+  string,
+  ReturnType<SundayCoreRuntime["channel"]["debounce"]["createInboundDebouncer"]>
+>();
+
+function getOrCreateDebouncer(
+  target: WebhookTarget,
+): ReturnType<SundayCoreRuntime["channel"]["debounce"]["createInboundDebouncer"]> {
+  const key = target.account.accountId;
+  let debouncer = accountDebouncers.get(key);
+  if (debouncer) {
+    return debouncer;
+  }
+  const debounceMs = target.core.channel.debounce.resolveInboundDebounceMs({
+    cfg: target.config,
+    channel: "sunday",
+  });
+  debouncer = target.core.channel.debounce.createInboundDebouncer<SundayDebounceEntry>({
+    debounceMs,
+    buildKey: (entry) => {
+      if (!entry.userId || !entry.conversationId) {
+        return null;
+      }
+      return `sunday:${key}:${entry.conversationId}:${entry.userId}`;
+    },
+    shouldDebounce: (entry) => {
+      if (!entry.text.trim()) {
+        return false;
+      }
+      return !target.core.channel.text.hasControlCommand(entry.text, target.config);
+    },
+    onFlush: async (entries) => {
+      const last = entries.at(-1);
+      if (!last) {
+        return;
+      }
+      const combinedText =
+        entries.length === 1
+          ? last.text
+          : entries
+              .map((e) => e.text)
+              .filter(Boolean)
+              .join("\n");
+      if (!combinedText.trim()) {
+        return;
+      }
+      await processMessageWithPipeline({
+        conversationId: last.conversationId,
+        userId: last.userId,
+        messageId: last.messageId,
+        text: combinedText,
+        timestamp: last.timestamp,
+        account: target.account,
+        config: target.config,
+        runtime: target.runtime,
+        core: target.core,
+        statusSink: target.statusSink,
+      });
+      // Mark all debounced messages as read.
+      const ids = entries.map((e) => e.messageId).filter(Boolean);
+      if (ids.length > 0) {
+        const creds: SundayCredentials = {
+          agentId: target.account.agentId,
+          apiKey: target.account.apiKey,
+          apiBaseUrl: target.account.apiBaseUrl,
+        };
+        try {
+          await markMessagesAsRead(creds, ids);
+        } catch {
+          // Best-effort.
+        }
+      }
+    },
+    onError: (err) => {
+      target.runtime.error?.(
+        `[${target.account.accountId}] sunday debounce flush failed: ${String(err)}`,
+      );
+    },
+  });
+  accountDebouncers.set(key, debouncer);
+  return debouncer;
+}
+
 async function processInboundMessage(
   event: SundayWebhookEvent,
   target: WebhookTarget,
@@ -225,35 +341,35 @@ async function processInboundMessage(
     return;
   }
 
+  // Dedup: skip if we've already seen this messageId recently (webhook retry).
+  if (messageId) {
+    const dedupeKey = `${target.account.accountId}:${messageId}`;
+    if (isRecentlySeen(dedupeKey)) {
+      target.runtime.log?.(
+        `[${target.account.accountId}] Skipping duplicate messageId=${messageId}`,
+      );
+      return;
+    }
+  }
+
+  target.core.channel.activity.record({
+    channel: "sunday",
+    accountId: target.account.accountId,
+    direction: "inbound",
+  });
+
   target.runtime.log?.(
     `[${target.account.accountId}] Processing message from ${userId}: "${messageText.slice(0, 80)}"`,
   );
 
-  await processMessageWithPipeline({
+  const debouncer = getOrCreateDebouncer(target);
+  await debouncer.enqueue({
     conversationId,
     userId,
     messageId,
     text: messageText,
     timestamp: data.timestamp ?? event.timestamp,
-    account: target.account,
-    config: target.config,
-    runtime: target.runtime,
-    core: target.core,
-    statusSink: target.statusSink,
   });
-
-  if (messageId) {
-    const creds: SundayCredentials = {
-      agentId: target.account.agentId,
-      apiKey: target.account.apiKey,
-      apiBaseUrl: target.account.apiBaseUrl,
-    };
-    try {
-      await markMessagesAsRead(creds, [messageId]);
-    } catch {
-      // Best-effort; don't fail the message pipeline over ack failures.
-    }
-  }
 }
 
 async function processMessageWithPipeline(params: {
@@ -347,7 +463,7 @@ async function processMessageWithPipeline(params: {
     cfg: config,
     channel: "sunday",
     accountId: account.accountId,
-    peer: { kind: "direct", id: chatId },
+    peer: { kind: "direct", id: senderId },
   });
   runtime.log?.(
     `[${account.accountId}] Routed to agent=${route.agentId} session=${route.sessionKey}`,
@@ -383,12 +499,13 @@ async function processMessageWithPipeline(params: {
     AccountId: route.accountId,
     ChatType: "direct",
     ConversationLabel: fromLabel,
-    SenderName: undefined,
+    SenderName: senderId,
     SenderId: senderId,
     CommandAuthorized: commandAuthorized,
     Provider: "sunday",
     Surface: "sunday",
     MessageSid: messageId,
+    Timestamp: parsedTimestamp ?? Date.now(),
     OriginatingChannel: "sunday",
     OriginatingTo: `sunday:${chatId}`,
   });
@@ -397,9 +514,25 @@ async function processMessageWithPipeline(params: {
     storePath,
     sessionKey: ctxPayload.SessionKey ?? route.sessionKey,
     ctx: ctxPayload,
+    updateLastRoute: {
+      sessionKey: route.mainSessionKey,
+      channel: "sunday",
+      to: `sunday:${chatId}`,
+      accountId: route.accountId,
+    },
     onRecordError: (err) => {
       runtime.error?.(`sunday: failed updating session meta: ${String(err)}`);
     },
+  });
+
+  const preview = rawBody.slice(0, 80);
+  const inboundLabel = `sunday:${senderId}`;
+  core.system.enqueueSystemEvent(`${inboundLabel}: ${preview}`, {
+    channel: "sunday",
+    accountId: account.accountId,
+    from: `sunday:${senderId}`,
+    to: `sunday:${chatId}`,
+    sessionKey: route.sessionKey,
   });
 
   const { onModelSelected, ...prefixOptions } = createReplyPrefixOptions({
@@ -471,10 +604,25 @@ async function deliverSundayReply(params: {
   const chunks = core.channel.text.chunkMarkdownTextWithMode(text, 4000, chunkMode);
   for (const chunk of chunks) {
     try {
-      await sendMessage(creds, { userId, conversationId: chatId }, chunk);
+      const response = await sendMessage(
+        creds,
+        { userId, conversationId: chatId || undefined },
+        chunk,
+      );
+      if (response.success === false) {
+        runtime.error?.(
+          `[${account.accountId}] Sunday reply delivery failed for ${userId}: ${response.error ?? "unknown error"}`,
+        );
+        continue;
+      }
+      core.channel.activity.record({
+        channel: "sunday",
+        accountId: account.accountId,
+        direction: "outbound",
+      });
       statusSink?.({ lastOutboundAt: Date.now() });
     } catch (err) {
-      runtime.error?.(`Sunday message send failed: ${String(err)}`);
+      runtime.error?.(`[${account.accountId}] Sunday message send failed: ${String(err)}`);
     }
   }
 }
@@ -514,6 +662,7 @@ export async function initSundayProvider(
     if (!stopped) {
       stopped = true;
       unregister();
+      accountDebouncers.delete(account.accountId);
     }
   };
 

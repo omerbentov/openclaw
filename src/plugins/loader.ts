@@ -211,6 +211,12 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
     workspaceDir: options.workspaceDir,
     extraPaths: normalized.loadPaths,
   });
+  // #region agent log
+  console.error(`[DEBUG:8e0902] plugin-discovery candidates=${discovery.candidates.length} diagnostics=${discovery.diagnostics.length} loadPaths=${JSON.stringify(normalized.loadPaths)}`);
+  for (const c of discovery.candidates) { console.error(`[DEBUG:8e0902]   candidate id=${c.idHint} source=${c.source} origin=${c.origin}`); }
+  for (const d of discovery.diagnostics) { console.error(`[DEBUG:8e0902]   diagnostic level=${d.level} msg=${d.message}`); }
+  fetch('http://127.0.0.1:7641/ingest/2929ff05-81df-45b9-b392-b9957651faae',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8e0902'},body:JSON.stringify({sessionId:'8e0902',location:'loader.ts:discovery',message:'plugin-discovery',data:{candidates:discovery.candidates.map(c=>({id:c.idHint,source:c.source,origin:c.origin})),diagnostics:discovery.diagnostics,loadPaths:normalized.loadPaths},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+  // #endregion
   const manifestRegistry = loadPluginManifestRegistry({
     config: cfg,
     workspaceDir: options.workspaceDir,
@@ -228,6 +234,10 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
     }
     const pluginSdkAlias = resolvePluginSdkAlias();
     const pluginSdkAccountIdAlias = resolvePluginSdkAccountIdAlias();
+    // #region agent log
+    console.error(`[DEBUG:8e0902] jiti-alias sdk=${pluginSdkAlias ?? 'NULL'} accountId=${pluginSdkAccountIdAlias ?? 'NULL'} NODE_ENV=${process.env.NODE_ENV ?? 'unset'} importMetaUrl=${import.meta.url}`);
+    fetch('http://127.0.0.1:7641/ingest/2929ff05-81df-45b9-b392-b9957651faae',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8e0902'},body:JSON.stringify({sessionId:'8e0902',location:'loader.ts:jiti-alias',message:'jiti-alias',data:{sdk:pluginSdkAlias,accountId:pluginSdkAccountIdAlias,NODE_ENV:process.env.NODE_ENV,importMetaUrl:import.meta.url},timestamp:Date.now(),hypothesisId:'E'})}).catch(()=>{});
+    // #endregion
     jitiLoader = createJiti(import.meta.url, {
       interopDefault: true,
       extensions: [".ts", ".tsx", ".mts", ".cts", ".mtsx", ".ctsx", ".js", ".mjs", ".cjs", ".json"],
@@ -280,6 +290,10 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
     }
 
     const enableState = resolveEnableState(pluginId, candidate.origin, normalized);
+    // #region agent log
+    console.error(`[DEBUG:8e0902] plugin-enable id=${pluginId} origin=${candidate.origin} enabled=${enableState.enabled} reason=${enableState.reason ?? 'ok'}`);
+    fetch('http://127.0.0.1:7641/ingest/2929ff05-81df-45b9-b392-b9957651faae',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8e0902'},body:JSON.stringify({sessionId:'8e0902',location:'loader.ts:enableState',message:'plugin-enable',data:{id:pluginId,origin:candidate.origin,enabled:enableState.enabled,reason:enableState.reason},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
     const entry = normalized.entries[pluginId];
     const record = createPluginRecord({
       id: pluginId,
@@ -319,9 +333,20 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
     }
 
     let mod: OpenClawPluginModule | null = null;
+    // #region agent log
+    console.error(`[DEBUG:8e0902] plugin-loading id=${record.id} source=${record.source}`);
+    // #endregion
     try {
       mod = getJiti()(candidate.source) as OpenClawPluginModule;
+      // #region agent log
+      console.error(`[DEBUG:8e0902] plugin-loaded id=${record.id} ok=true`);
+      fetch('http://127.0.0.1:7641/ingest/2929ff05-81df-45b9-b392-b9957651faae',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8e0902'},body:JSON.stringify({sessionId:'8e0902',location:'loader.ts:jiti-load',message:'plugin-loaded',data:{id:record.id,ok:true},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
     } catch (err) {
+      // #region agent log
+      console.error(`[DEBUG:8e0902] plugin-load-FAILED id=${record.id} err=${String(err)}`);
+      fetch('http://127.0.0.1:7641/ingest/2929ff05-81df-45b9-b392-b9957651faae',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8e0902'},body:JSON.stringify({sessionId:'8e0902',location:'loader.ts:jiti-load',message:'plugin-load-FAILED',data:{id:record.id,error:String(err)},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
       logger.error(`[plugins] ${record.id} failed to load from ${record.source}: ${String(err)}`);
       record.status = "error";
       record.error = String(err);

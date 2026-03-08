@@ -23,9 +23,7 @@ export async function probeSunday(
   const startTime = Date.now();
 
   try {
-    // Lightweight probe: call getAgentInfo instead of getPendingMessages to
-    // avoid side effects and unnecessary data transfer during health checks.
-    await callSundayApi(creds, "/getAgentInfo", {
+    await callSundayApi(creds, "/getPendingMessages", {
       method: "GET",
       timeoutMs,
     });
@@ -35,11 +33,6 @@ export async function probeSunday(
     const elapsedMs = Date.now() - startTime;
 
     if (err instanceof SundayApiError) {
-      // A 404 means the endpoint doesn't exist but the server is reachable
-      // — treat as healthy since credentials authenticated successfully.
-      if (err.statusCode === 404) {
-        return { ok: true, elapsedMs };
-      }
       return { ok: false, error: err.errorBody ?? err.message, elapsedMs };
     }
 

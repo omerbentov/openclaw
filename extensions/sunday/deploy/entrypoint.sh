@@ -115,7 +115,7 @@ const config = {
   gateway: {
     port: parseInt(process.env.PORT, 10) || 8080,
     mode: "local",
-    bind: "lan",
+    bind: "loopback",
     auth: { mode: "token", token: gatewayToken },
     tailscale: { mode: "off", resetOnExit: false },
     nodes: {
@@ -150,6 +150,6 @@ export NODE_OPTIONS="--max-old-space-size=3072 ${NODE_OPTIONS:-}"
 
 echo "--- Starting gateway ---"
 
-exec node openclaw.mjs gateway --verbose --bind lan --port "${PORT}" --token "${OPENCLAW_GATEWAY_TOKEN}"
+exec node openclaw.mjs gateway --verbose --bind loopback --port "${PORT}" --token "${OPENCLAW_GATEWAY_TOKEN}"
 
 echo "--- Gateway Started ---"

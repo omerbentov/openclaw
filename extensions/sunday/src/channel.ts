@@ -74,7 +74,7 @@ export const sundayDock: ChannelDock = {
   id: "sunday",
   capabilities: {
     chatTypes: ["direct"],
-    blockStreaming: false,
+    blockStreaming: true,
   },
   outbound: { textChunkLimit: 4000 },
   config: {
@@ -105,7 +105,7 @@ export const sundayPlugin: ChannelPlugin<ResolvedSundayAccount> = {
     threads: false,
     polls: false,
     nativeCommands: false,
-    blockStreaming: false,
+    blockStreaming: true,
   },
   reload: { configPrefixes: ["channels.sunday"] },
   configSchema: buildChannelConfigSchema(SundayConfigSchema),

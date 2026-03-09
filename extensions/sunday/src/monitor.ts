@@ -301,20 +301,6 @@ function getOrCreateDebouncer(
         core: target.core,
         statusSink: target.statusSink,
       });
-      // Mark all debounced messages as read.
-      const ids = entries.map((e) => e.messageId).filter(Boolean);
-      if (ids.length > 0) {
-        const creds: SundayCredentials = {
-          agentId: target.account.agentId,
-          apiKey: target.account.apiKey,
-          apiBaseUrl: target.account.apiBaseUrl,
-        };
-        try {
-          await markMessagesAsRead(creds, ids);
-        } catch {
-          // Best-effort.
-        }
-      }
     },
     onError: (err) => {
       target.runtime.error?.(
@@ -357,6 +343,18 @@ async function processInboundMessage(
     accountId: target.account.accountId,
     direction: "inbound",
   });
+
+  // Immediately acknowledge the message so the Sunday backend knows we received it.
+  if (messageId) {
+    const creds: SundayCredentials = {
+      agentId: target.account.agentId,
+      apiKey: target.account.apiKey,
+      apiBaseUrl: target.account.apiBaseUrl,
+    };
+    markMessagesAsRead(creds, [messageId]).catch(() => {
+      // Best-effort; don't block processing.
+    });
+  }
 
   target.runtime.log?.(
     `[${target.account.accountId}] Processing message from ${userId}: "${messageText.slice(0, 80)}"`,
@@ -568,7 +566,7 @@ async function processMessageWithPipeline(params: {
         runtime.error?.(`[${account.accountId}] Sunday ${info.kind} reply failed: ${String(err)}`);
       },
     },
-    replyOptions: { onModelSelected, disableBlockStreaming: true },
+    replyOptions: { onModelSelected, disableBlockStreaming: false },
   });
 }
 
